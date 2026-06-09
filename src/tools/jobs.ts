@@ -4,6 +4,10 @@ import { supabase } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
 import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
 
+const JD_COLUMNS =
+  "id,enterprise_id,team_leader_id,job_title,job_summary,key_responsibilities," +
+  "location,remote,salary_min,salary_max,ai_traits,is_active,created_at,updated_at";
+
 export function registerJobsTools(server: McpServer): void {
   const registerTool = authedRegisterTool(server);
   registerTool(
@@ -21,9 +25,9 @@ export function registerJobsTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ is_active, search, limit, offset }) => {
-      let q = supabase.from("job_descriptions").select("*").range(offset, offset + limit - 1);
-      if (is_active !== undefined) q = is_active ? q.eq("status", "active") : q.neq("status", "active");
-      if (search) q = q.ilike("title", `%${search}%`);
+      let q = supabase.from("job_descriptions").select(JD_COLUMNS).range(offset, offset + limit - 1);
+      if (is_active !== undefined) q = q.eq("is_active", is_active);
+      if (search) q = q.ilike("job_title", `%${search}%`);
       const { data, error } = await q;
       if (error) return err(error.message);
       return ok({ count: data?.length ?? 0, jds: data ?? [] });
@@ -56,7 +60,7 @@ export function registerJobsTools(server: McpServer): void {
         payload: z
           .record(z.unknown())
           .describe(
-            "Object with at minimum: enterprise_id, job_title. Optional: job_summary, key_responsibilities, location, remote, salary_min/max, ai_traits, is_active.",
+            "Object with at minimum: enterprise_id, job_title. Optional: job_summary, key_responsibilities, location, remote, salary_min/max, ai_traits, is_active, team_leader_id.",
           ),
       },
       annotations: { readOnlyHint: false, idempotentHint: false },

@@ -5,6 +5,11 @@ import { sessionFilePath } from "./session-path.js";
 import { deleteSessionFile, readSessionFile, writeSessionFile } from "./session-file.js";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  // TrueCalling's data lives in the `api` Postgres schema (PostgREST's default
+  // here), NOT `public`. supabase-js defaults db.schema to `public`, which is a
+  // near-empty prototype copy — every table query must target `api` or it reads
+  // the wrong tables (e.g. a stale public.job_descriptions with a different schema).
+  db: { schema: "api" },
   auth: { persistSession: false, autoRefreshToken: true },
 });
 
