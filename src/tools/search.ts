@@ -86,16 +86,44 @@ export function registerSearchTools(server: McpServer): void {
     {
       title: "Search candidates via People Data Labs",
       description:
-        "Calls `search-candidates-pdl` edge function. Free-form query passed to PDL's elastic-like search.",
+        "Calls the `search-candidates-pdl` edge function. The edge REQUIRES `jobTitle` and " +
+        "currently filters by title only — it ignores location server-side, so pass `location` to " +
+        "filter the returned profiles client-side. Use `filters` to forward any extra fields verbatim.",
       inputSchema: {
-        query: z.record(z.unknown()).describe("PDL search query DSL"),
+        jobTitle: z.string().min(2).describe("Job title to search for (required by the edge function)"),
+        location: z
+          .string()
+          .optional()
+          .describe("Location substring used to filter results client-side (the edge ignores location)"),
         size: z.number().int().min(1).max(100).default(25),
+        filters: z
+          .record(z.unknown())
+          .optional()
+          .describe("Extra fields forwarded verbatim to the edge function (e.g. seniority, skills)"),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ query, size }) => {
-      const result = await invokeEdge("search-candidates-pdl", { query, size });
-      return ok(result);
+    async ({ jobTitle, location, size, filters }) => {
+      const result = (await invokeEdge("search-candidates-pdl", {
+        jobTitle,
+        size,
+        ...(filters ?? {}),
+      })) as any;
+      if (!location) return ok(result);
+      // The edge ignores location, so filter the returned profiles here.
+      const profiles: any[] | undefined = Array.isArray(result)
+        ? result
+        : result?.candidates ?? result?.data ?? result?.results ?? result?.profiles;
+      if (!Array.isArray(profiles)) return ok(result);
+      const needle = location.toLowerCase();
+      const matched = profiles.filter((c) => {
+        const hay = [c?.location_name, c?.location_country, c?.job_company_location_name, c?.location]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return hay.includes(needle);
+      });
+      return ok({ count: matched.length, filtered_by_location: location, candidates: matched });
     },
   );
 }
