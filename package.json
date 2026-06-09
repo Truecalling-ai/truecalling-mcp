@@ -1,0 +1,30 @@
+{
+  "name": "truecalling-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server exposing TrueCalling operations (candidates, JDs, scoring, enrichment, Emily, WhatsApp, psy, reports) to Claude Code via stdio.",
+  "type": "module",
+  "bin": {
+    "truecalling-mcp": "dist/index.js"
+  },
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --target node20 --out-dir dist --clean",
+    "dev": "node --env-file=.env --import tsx src/index.ts",
+    "start": "node --env-file=.env dist/index.js",
+    "inspect": "npm run build && npx @modelcontextprotocol/inspector node --env-file=.env dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@supabase/supabase-js": "^2.45.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsup": "^8.3.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
