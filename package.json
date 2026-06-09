@@ -7,8 +7,14 @@
     "truecalling-mcp": "dist/index.js"
   },
   "main": "dist/index.js",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
-    "build": "tsup src/index.ts --format esm --target node20 --out-dir dist --clean",
+    "build": "tsup src/index.ts --format esm --target node20 --out-dir dist --clean && chmod +x dist/index.js",
+    "prepare": "npm run build",
     "dev": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "start": "node --env-file-if-exists=.env dist/index.js",
     "inspect": "npm run build && npx @modelcontextprotocol/inspector node --env-file-if-exists=.env dist/index.js"
@@ -26,5 +32,9 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Truecalling-ai/truecalling-mcp.git"
   }
 }
