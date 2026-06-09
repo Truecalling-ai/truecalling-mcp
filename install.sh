@@ -206,6 +206,7 @@ green "✓ Backed up existing config → ${BACKUP}"
 
 TC_NODE_BIN="$NODE_BIN" TC_NPX_CLI="$NPX_CLI" "$NODE_BIN" - "$CLAUDE_JSON" <<'NODE_SCRIPT'
 const fs = require('fs');
+const nodePath = require('path');
 const path = process.argv[2];
 const nodeBin = process.env.TC_NODE_BIN;
 const npxCli = process.env.TC_NPX_CLI;
@@ -221,6 +222,13 @@ catch (e) {
 }
 json.mcpServers = json.mcpServers || {};
 const existed = !!json.mcpServers.truecalling;
+// node's own directory — covers node, npm and npx. npx shells out to inner
+// `#!/usr/bin/env node` sub-processes (the package bin + its build step), and
+// VS Code spawns the MCP child with a minimal PATH that lacks node, so those
+// env-node shebangs fail with "env: node: No such file or directory". Put
+// node's dir + the standard system dirs (git, coreutils) on PATH so every
+// inner process resolves.
+const nodeDir = nodePath.dirname(nodeBin);
 json.mcpServers.truecalling = {
   type: 'stdio',
   // Absolute path to node + absolute path to npx-cli.js as the first arg.
@@ -228,6 +236,9 @@ json.mcpServers.truecalling = {
   // fail under VS Code's minimal child PATH.
   command: nodeBin,
   args: [npxCli, '-y', 'github:Truecalling-ai/truecalling-mcp'],
+  // PATH so npx's inner env-node sub-processes resolve under the minimal
+  // child environment (see comment above).
+  env: { PATH: nodeDir + ':/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' },
 };
 // Atomic write: tmp + rename so a crash mid-write never corrupts claude.json.
 const tmp = path + '.tmp.' + process.pid;
