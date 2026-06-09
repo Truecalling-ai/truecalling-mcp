@@ -80,25 +80,79 @@ function feMapPerson(p: any) {
     skills: skills as string[],
   };
 }
-// Convert a FullEnrich profile to the CV object the score-candidate edge expects
-// (mirror of fepersonToCVObject in src/pages/AdvancedSearch.tsx).
+// Skill normalization — mirror of fullenrichService.ts normalizeSkillValue.
+const SKILL_ALIASES: Record<string, string> = {
+  d365: "Dynamics 365", dynamics365: "Dynamics 365",
+  "d365 fo": "Dynamics 365 Finance & Operations", d365fo: "Dynamics 365 Finance & Operations",
+  "f&o": "Dynamics 365 Finance & Operations", "d365 bc": "Dynamics 365 Business Central",
+  d365bc: "Dynamics 365 Business Central", "business central": "Dynamics 365 Business Central",
+  nodejs: "Node.js", "node.js": "Node.js", reactjs: "React", "react.js": "React",
+  typescript: "TypeScript", javascript: "JavaScript", postgresql: "PostgreSQL", postgres: "PostgreSQL",
+  aws: "AWS", gcp: "GCP", azure: "Azure", devops: "DevOps", "ci/cd": "CI/CD", cicd: "CI/CD",
+  golang: "Go", csharp: "C#", cpp: "C++", "power bi": "Power BI", powerbi: "Power BI",
+  graphql: "GraphQL", "rest api": "REST API",
+};
+function normalizeSkillValue(s: any): string {
+  if (!s) return "";
+  const raw =
+    typeof s === "string"
+      ? s.trim()
+      : typeof s === "object"
+        ? String(s.name ?? s.label ?? "").trim()
+        : String(s).trim();
+  return SKILL_ALIASES[raw.toLowerCase().trim()] ?? raw;
+}
+function yearsBetween(a: any, b: any): number {
+  if (!a) return 0;
+  const s = new Date(a).getTime();
+  const e = b && b !== "Present" ? new Date(b).getTime() : Date.now();
+  if (Number.isNaN(s)) return 0;
+  const ms = e - s;
+  return ms > 0 ? ms / (365.25 * 24 * 3600 * 1000) : 0;
+}
+function getTotalYears(p: any): number {
+  if (typeof p?.total_experience_years === "number") return p.total_experience_years;
+  if (typeof p?.experience_years === "number") return p.experience_years;
+  const hist: any[] = p?.employment?.history ?? p?.employment?.all ?? [];
+  if (hist.length)
+    return Math.round(Math.min(hist.reduce((a: number, j: any) => a + yearsBetween(j?.start_at, j?.end_at), 0), 60) * 10) / 10;
+  const cur = p?.employment?.current ?? {};
+  return yearsBetween(cur.start_at, cur.end_at);
+}
+function normalizeEmployment(p: any): Array<{ title: string; company: string; start: string; end: string }> {
+  const hist: any[] = p?.employment?.history ?? p?.employment?.all ?? [];
+  const rows = hist.map((j: any) => ({
+    title: String(j?.title ?? "").trim(),
+    company: String(j?.company_name ?? j?.company?.name ?? j?.organization ?? "").trim(),
+    start: j?.start_at ?? "",
+    end: j?.end_at ?? "Present",
+  }));
+  if (!rows.length && p?.employment?.current) {
+    const c = p.employment.current;
+    rows.push({
+      title: String(c?.title ?? "").trim(),
+      company: String(c?.company_name ?? c?.company?.name ?? "").trim(),
+      start: c?.start_at ?? "",
+      end: "Present",
+    });
+  }
+  return rows;
+}
+// EXACT replica of fepersonToCVObject(mapPerson(p)) so score-candidate returns
+// the same compatibility score as the platform. Key ORDER matters: the lite
+// scorer is deterministic (temp 0) but sensitive to the serialized CV.
 function feToCv(p: any): Record<string, unknown> {
-  const emp = p?.employment ?? {};
-  const all = Array.isArray(emp.all) ? emp.all : emp.current ? [emp.current] : [];
-  const skills = Array.isArray(p?.skills)
-    ? p.skills.map((x: any) => (typeof x === "string" ? x : x?.name ?? x?.label ?? "")).filter(Boolean)
-    : [];
   return {
-    name: p?.full_name || [p?.first_name, p?.last_name].filter(Boolean).join(" "),
-    currentTitle: emp.current?.title ?? p?.title ?? "",
+    name: String(p?.full_name ?? "").trim(),
+    currentTitle: String(p?.employment?.current?.title ?? p?.title ?? "").trim(),
     location: [p?.location?.city, p?.location?.country].filter(Boolean).join(", "),
-    totalExperienceYears: 0,
-    skills,
+    totalExperienceYears: getTotalYears(p),
+    skills: (Array.isArray(p?.skills) ? p.skills : []).map(normalizeSkillValue).filter(Boolean),
     linkedinUrl: p?.social_profiles?.professional_network?.url ?? "",
-    experience: all.map((e: any) => ({
-      title: e?.title ?? "",
-      company: e?.company?.name ?? "",
-      duration: [e?.start_at, e?.end_at].filter(Boolean).join("–"),
+    experience: normalizeEmployment(p).map((e) => ({
+      title: e.title,
+      company: e.company,
+      duration: [e.start, e.end].filter(Boolean).join("–"),
     })),
   };
 }
