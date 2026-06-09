@@ -26,25 +26,50 @@ All tools authenticate as a real TrueCalling user → **RLS applies**. You only 
 - A TrueCalling account (email + password)
 - Claude Code installed locally
 
-## Installation
+## Installation — zero-config (recommended)
 
-```bash
-git clone https://github.com/CohenYarone01/truecalling-mcp.git
-cd truecalling-mcp
-npm install
-npm run build
-```
-
-**No `.env` editing needed.** Supabase URL + anon key ship as defaults baked into `src/config.ts`. Credentials are collected interactively by Claude on first use — see "Wire to Claude Code" below.
-
-## Wire to Claude Code
-
-Edit `~/.claude.json` and add an entry under `mcpServers`:
+Add this entry to `~/.claude.json` under `mcpServers` — nothing to clone, nothing to build:
 
 ```json
 {
   "mcpServers": {
     "truecalling": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "github:Truecalling-ai/truecalling-mcp"]
+    }
+  }
+}
+```
+
+That's it. **Restart Claude Code.**
+
+Behind the scenes, `npx` clones the repo into its cache, runs the `prepare` script which auto-builds the TypeScript, and starts the MCP server. First start takes ~10–30 seconds; subsequent starts are instant (cached).
+
+**No `.env` editing needed.** Supabase URL + anon key ship as defaults. Credentials are collected interactively by Claude on first use — see "First use — sign in" below.
+
+Tools appear as `mcp__truecalling__<name>` (e.g. `mcp__truecalling__list_candidates`).
+
+### Why `npx` and not `node /path/to/dist/index.js`
+
+VS Code (and some other apps that launch Claude Code as an extension) start child processes with a minimal `PATH` that may not include the user's `node` binary. `npx` is always findable via the same mechanism Claude Code already uses for other MCP servers, so it just works on macOS/Linux/Windows without hardcoding a node path.
+
+## Alternative — local clone (for development)
+
+If you want to hack on the server itself:
+
+```bash
+git clone https://github.com/Truecalling-ai/truecalling-mcp.git
+cd truecalling-mcp
+npm install   # auto-runs prepare → builds dist/
+```
+
+Then point `~/.claude.json` at your local checkout:
+
+```json
+{
+  "mcpServers": {
+    "truecalling-local": {
       "type": "stdio",
       "command": "node",
       "args": ["/ABSOLUTE/PATH/TO/truecalling-mcp/dist/index.js"]
@@ -52,10 +77,6 @@ Edit `~/.claude.json` and add an entry under `mcpServers`:
   }
 }
 ```
-
-Replace `/ABSOLUTE/PATH/TO/` with the real path (use `pwd` inside the cloned folder). **No `--env-file` flag is needed.**
-
-**Restart Claude Code.** Tools then appear as `mcp__truecalling__<name>` (e.g. `mcp__truecalling__list_candidates`).
 
 ## First use — sign in
 
