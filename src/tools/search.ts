@@ -138,6 +138,40 @@ function normalizeEmployment(p: any): Array<{ title: string; company: string; st
   }
   return rows;
 }
+// Infer the [min,max] experience window from a JD — EXACT replica of
+// AdvancedSearch.tsx inferYearsFromJD. A "Manager" title => 7-15 years, etc.
+// This is why the platform surfaces senior profiles, not junior freelancers.
+function inferYearsFromJD(jd: any): { min: number; max: number } | null {
+  const text = [jd?.requirements, jd?.qualifications, jd?.job_description]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const title = String(jd?.job_title ?? "").toLowerCase();
+  const patterns = [
+    /(\d+)\s*[àa-]\s*(\d+)\s*(ans|year|année)/i,
+    /(\d+)\+\s*(ans|year|année)/i,
+    /(?:minimum|au moins|minimum de|at least)\s*(\d+)\s*(ans|year|année)/i,
+    /(\d+)\s*(ans?|years?)\s*(?:d.expérience|of experience|minimum|requis|required)/i,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (m) {
+      const a = parseInt(m[1], 10);
+      const b = m[2] !== undefined && /^\d+$/.test(m[2]) ? parseInt(m[2], 10) : null;
+      if (!Number.isNaN(a)) {
+        return { min: a, max: b !== null ? Math.min(b, 20) : Math.min(a + 4, 20) };
+      }
+    }
+  }
+  if (/\b(c[- ]?level|chief|ceo|cto|coo|cfo|cpo)\b/i.test(title)) return { min: 15, max: 20 };
+  if (/\b(vp|vice.?president|vice président)\b/i.test(title)) return { min: 12, max: 20 };
+  if (/\b(director|directeur)\b/i.test(title)) return { min: 10, max: 18 };
+  if (/\b(manager|responsable|head of|chef de)\b/i.test(title)) return { min: 7, max: 15 };
+  if (/\b(senior|sr\.?|expérimenté|confirmé|lead)\b/i.test(title)) return { min: 5, max: 12 };
+  if (/\b(mid|intermediary|intermédiaire|confirmed|confirmé)\b/i.test(title)) return { min: 2, max: 6 };
+  if (/\b(junior|jr\.?|débutant|entry.?level|stage|intern)\b/i.test(title)) return { min: 0, max: 2 };
+  return null;
+}
 // EXACT replica of fepersonToCVObject(mapPerson(p)) so score-candidate returns
 // the same compatibility score as the platform. Key ORDER matters: the lite
 // scorer is deterministic (temp 0) but sensitive to the serialized CV.
@@ -349,8 +383,8 @@ export function registerSearchTools(server: McpServer): void {
           .number()
           .int()
           .min(1)
-          .max(150)
-          .default(50)
+          .max(250)
+          .default(120)
           .describe("How many candidates (in FullEnrich arrival order, NOT pre-ranked) to AI-score; caps the OpenAI cost. The platform scores all — raise for closer parity."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
@@ -434,7 +468,7 @@ export function registerSearchTools(server: McpServer): void {
 
       // 2. Paginate, light-title-filter, dedupe and score — like searchAndAdaptByJDMax.
       const seen = new Set<string>();
-      const scored: any[] = [];
+      let scored: any[] = [];
       let totalInDb: number | null = null;
       let retryWithoutSkills = false;
 
@@ -491,6 +525,19 @@ export function registerSearchTools(server: McpServer): void {
         if (batch.length < 100) break; // exhausted
       }
 
+      // Filter the pool by the experience window inferred from the JD, exactly
+      // like AdvancedSearch (inferYearsFromJD -> feMinYears/feMaxYears): a
+      // "Manager" title => 7-15 years. This is the BIGGEST divergence — without
+      // it the pool drowns in junior/freelance profiles and the senior profiles
+      // the platform ranks #1/#2 never get scored.
+      const years = inferYearsFromJD(jd);
+      if (years) {
+        scored = scored.filter((c) => {
+          const y = Number(c.cv?.totalExperienceYears ?? 0);
+          return y >= years.min && (years.max >= 20 || y <= years.max);
+        });
+      }
+
       // Post-sort the whole pool by title-keyword relevance — exactly like the
       // platform's searchPeopleWithRaw (more matching title synonyms in the
       // person's title = earlier). This sets the order we AI-score in, so the
@@ -519,7 +566,7 @@ export function registerSearchTools(server: McpServer): void {
           .filter(Boolean)
           .join("\n");
         const toScore = scored.slice(0, Math.min(ai_score_top, scored.length));
-        const CONCURRENCY = 5;
+        const CONCURRENCY = 12;
         for (let i = 0; i < toScore.length; i += CONCURRENCY) {
           const batch = toScore.slice(i, i + CONCURRENCY);
           await Promise.all(
@@ -566,6 +613,7 @@ export function registerSearchTools(server: McpServer): void {
         jd_id,
         job_title: jd.job_title,
         search_params: { title: titleKeyword, city, country, must: mustSkills, should: shouldSkills },
+        years_filter: years,
         expanded_titles: titles,
         location_filter: locValue || null,
         total_in_db: totalInDb,
