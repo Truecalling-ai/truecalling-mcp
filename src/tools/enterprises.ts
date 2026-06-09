@@ -19,20 +19,39 @@ export function registerEnterprisesTools(server: McpServer): void {
       const { data: userData } = await supabase.auth.getUser();
       const authUserId = userData.user?.id;
       if (!authUserId) return err("No authenticated user.");
-      const { data: member, error: memberErr } = await supabase
+      // A user can belong to MORE THAN ONE enterprise (one row per membership in
+      // enterprises_team), so we must NOT use maybeSingle() here — it errors with
+      // "JSON object requested, multiple (or no) rows returned" the moment a user
+      // has 2+ enterprises.
+      const { data: members, error: memberErr } = await supabase
         .from("enterprises_team")
         .select("id,enterprise_id,role,full_name,email")
-        .eq("auth_user_id", authUserId)
-        .maybeSingle();
+        .eq("auth_user_id", authUserId);
       if (memberErr) return err(memberErr.message);
-      if (!member) return err("Authenticated user is not a member of any enterprise.");
-      const { data: enterprise, error: entErr } = await supabase
+      if (!members || members.length === 0)
+        return err("Authenticated user is not a member of any enterprise.");
+      const ids = [...new Set(members.map((m) => m.enterprise_id))];
+      const { data: enterprises, error: entErr } = await supabase
         .from("enterprises")
         .select("*")
-        .eq("id", member.enterprise_id)
-        .maybeSingle();
+        .in("id", ids);
       if (entErr) return err(entErr.message);
-      return ok({ membership: member, enterprise });
+      const byId = new Map((enterprises ?? []).map((e) => [e.id, e]));
+      const memberships = members.map((m) => ({
+        membership: m,
+        enterprise: byId.get(m.enterprise_id) ?? null,
+      }));
+      // Back-compat: a single-enterprise user keeps the original singular shape.
+      if (memberships.length === 1) {
+        return ok({ membership: members[0], enterprise: memberships[0].enterprise });
+      }
+      return ok({
+        count: memberships.length,
+        multiple: true,
+        message:
+          "User belongs to multiple enterprises. Pass the chosen enterprise_id to subsequent tools (list_jds, get_enterprise_config, etc.).",
+        memberships,
+      });
     },
   );
 
