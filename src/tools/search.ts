@@ -86,6 +86,24 @@ function fePickPeople(raw: any): any[] {
     : Array.isArray(raw?.results) ? raw.results
     : Array.isArray(raw) ? raw : [];
 }
+const TITLE_NOISE = new Set([
+  "senior", "junior", "lead", "principal", "staff", "associate", "sr", "jr", "mid",
+  "head", "chief", "director", "manager", "officer", "specialist", "expert", "consultant",
+  "the", "of", "and", "de", "du", "le", "la", "les", "en", "et", "pour",
+]);
+function passesLightTitleFilter(person: any, titleKeywords: string): boolean {
+  if (!titleKeywords) return true;
+  const jdWords = titleKeywords
+    .toLowerCase()
+    .replace(/[^a-z0-9\séèêàâùûîôç]/g, " ")
+    .split(/\s+/)
+    .filter((w) => w.length > 2 && !TITLE_NOISE.has(w));
+  if (jdWords.length === 0) return true;
+  const cur = person?.employment?.current;
+  const personTitle = String(cur?.title || person?.headline || person?.title || "").toLowerCase();
+  if (!personTitle) return false;
+  return jdWords.some((w) => personTitle.includes(w));
+}
 
 export function registerSearchTools(server: McpServer): void {
   const registerTool = authedRegisterTool(server);
@@ -218,12 +236,13 @@ export function registerSearchTools(server: McpServer): void {
   registerTool(
     "search_jd_candidates",
     {
-      title: "Source candidates for a JD (FullEnrich, location-aware)",
+      title: "Source candidates for a JD (FullEnrich — aligned with the platform)",
       description:
-        "Sources candidates for a job description via FullEnrich — mirrors the app's searchAndAdaptByJDMax: builds " +
-        "current_position_titles from the JD title, person_locations from the JD location (overridable), and " +
-        "person_skills from requirements/qualifications, then scores each profile against the JD skills and returns " +
-        "the top matches sorted by score. Synchronous and honours location (no background edge job).",
+        "Replicates the app's searchAndAdaptByJDMax for a job description: LLM-expands the title (expand-job-title), " +
+        "searches FullEnrich across up to `max_pages` pages (100/page) filtered by person_locations (JD location, " +
+        "overridable) and person_skills (requirements/qualifications), applies the light title filter, dedupes, " +
+        "scores every profile against the JD skills, and returns the top `size`. FullEnrich search is free (credits " +
+        "only on enrichment); deep runs are slower, so lower max_pages if your client times out.",
       inputSchema: {
         jd_id: z.string().uuid(),
         location: z
@@ -231,10 +250,22 @@ export function registerSearchTools(server: McpServer): void {
           .optional()
           .describe("Override the location filter (defaults to the JD's location). E.g. 'France', 'Paris, France'."),
         size: z.number().int().min(1).max(100).default(25).describe("How many top candidates to return"),
+        max_pages: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .default(50)
+          .describe("FullEnrich pages to analyze (100 profiles each). Platform uses 50; lower for faster runs."),
+        expand_title: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe("LLM-expand the JD title into synonyms before searching (like the platform)."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ jd_id, location, size }) => {
+    async ({ jd_id, location, size, max_pages, expand_title }) => {
       const { data: jd, error: jdErr } = await supabase
         .from("job_descriptions")
         .select("id,job_title,location,requirements,qualifications,soft_skills")
@@ -247,35 +278,67 @@ export function registerSearchTools(server: McpServer): void {
       const mustSkills = splitSkills(jd.requirements);
       const shouldSkills = [...splitSkills(jd.qualifications), ...splitSkills(jd.soft_skills)];
       const locValue = normalizeLocation(location ?? jd.location ?? "");
-      const titles = String(jd.job_title).split(/[,\n;|]/).map((t) => t.trim()).filter(Boolean);
 
-      const body: Record<string, unknown> = {
-        limit: size,
+      // 1. Expand the title into synonyms (the platform does this before searching).
+      let titles: string[] = [String(jd.job_title)];
+      if (expand_title !== false) {
+        try {
+          const exp = (await invokeEdge("expand-job-title", { title: jd.job_title })) as { titles?: string[] };
+          if (Array.isArray(exp?.titles) && exp.titles.length) titles = exp.titles;
+        } catch {
+          // fall back to the raw title
+        }
+      }
+      const titleKeywords = titles.join(", ");
+
+      const skillFilters = [...mustSkills, ...shouldSkills].map(v3val).filter(Boolean);
+      const baseBody: Record<string, unknown> = {
+        limit: 100,
         current_position_titles: titles.map(v3val).filter(Boolean),
       };
-      const skillFilters = [...mustSkills, ...shouldSkills].map(v3val).filter(Boolean);
-      if (skillFilters.length) body.person_skills = skillFilters;
-      if (locValue) body.person_locations = [v3val(locValue)].filter(Boolean);
+      if (locValue) baseBody.person_locations = [v3val(locValue)].filter(Boolean);
 
-      let raw = (await invokeEdge("fullenrich-proxy", { action: "search", body })) as any;
-      let people = fePickPeople(raw);
-      // Fallback: if the skill filter zeroed out results, retry without it (keep location).
-      if (people.length === 0 && skillFilters.length) {
-        const noSkills = { ...body };
-        delete (noSkills as Record<string, unknown>).person_skills;
-        raw = (await invokeEdge("fullenrich-proxy", { action: "search", body: noSkills })) as any;
-        people = fePickPeople(raw);
-      }
+      // 2. Paginate, light-title-filter, dedupe and score — like searchAndAdaptByJDMax.
+      const seen = new Set<string>();
+      const scored: any[] = [];
+      let totalInDb: number | null = null;
+      let retryWithoutSkills = false;
 
-      const scored = people
-        .map((p: any) => {
+      for (let page = 0; page < max_pages; page++) {
+        const body: Record<string, unknown> = { ...baseBody, offset: page * 100 };
+        if (!retryWithoutSkills && skillFilters.length) body.person_skills = skillFilters;
+        let raw: any;
+        try {
+          raw = await invokeEdge("fullenrich-proxy", { action: "search", body });
+        } catch {
+          break;
+        }
+        let batch = fePickPeople(raw);
+        if (page === 0 && batch.length === 0 && skillFilters.length && !retryWithoutSkills) {
+          retryWithoutSkills = true;
+          const noSkills = { ...body };
+          delete (noSkills as Record<string, unknown>).person_skills;
+          try {
+            raw = await invokeEdge("fullenrich-proxy", { action: "search", body: noSkills });
+          } catch {
+            break;
+          }
+          batch = fePickPeople(raw);
+        }
+        if (page === 0) totalInDb = raw?.result?.metadata?.total ?? raw?.metadata?.total ?? null;
+
+        for (const p of batch) {
+          if (!passesLightTitleFilter(p, titleKeywords)) continue;
+          const key = String(p?.id || p?.linkedin_url || p?.full_name || "").trim();
+          if (key && seen.has(key)) continue;
+          if (key) seen.add(key);
           const m = feMapPerson(p);
           const matchedMust = matchLoose(m.skills, mustSkills);
           const matchedShould = matchLoose(m.skills, shouldSkills);
           const total = mustSkills.length + shouldSkills.length;
           const jdScore =
             total > 0 ? Math.round(((matchedMust.length + matchedShould.length) / total) * 100) : 50;
-          return {
+          scored.push({
             jdScore,
             fullName: m.fullName,
             title: m.title,
@@ -283,16 +346,21 @@ export function registerSearchTools(server: McpServer): void {
             location: m.location,
             linkedinUrl: m.linkedinUrl,
             matchedMust,
-          };
-        })
-        .sort((a: { jdScore: number }, b: { jdScore: number }) => b.jdScore - a.jdScore);
+          });
+        }
 
+        if (batch.length < 100) break; // exhausted
+      }
+
+      scored.sort((a, b) => b.jdScore - a.jdScore);
       return ok({
         jd_id,
         job_title: jd.job_title,
+        expanded_titles: titles,
         location_filter: locValue || null,
-        total_in_db: raw?.result?.metadata?.total ?? raw?.metadata?.total ?? null,
-        returned: scored.length,
+        total_in_db: totalInDb,
+        analyzed: scored.length,
+        returned: Math.min(scored.length, size),
         candidates: scored.slice(0, size),
       });
     },
