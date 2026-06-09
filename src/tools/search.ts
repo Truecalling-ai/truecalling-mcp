@@ -349,9 +349,9 @@ export function registerSearchTools(server: McpServer): void {
           .number()
           .int()
           .min(1)
-          .max(50)
-          .default(20)
-          .describe("How many top-jdScore candidates to AI-score (caps the OpenAI cost), then re-rank by compatibility."),
+          .max(150)
+          .default(50)
+          .describe("How many candidates (in FullEnrich arrival order, NOT pre-ranked) to AI-score; caps the OpenAI cost. The platform scores all — raise for closer parity."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
@@ -420,7 +420,12 @@ export function registerSearchTools(server: McpServer): void {
       }
       const titleKeywords = titles.join(", ");
 
-      const skillFilters = [...mustSkills, ...shouldSkills].map(v3val).filter(Boolean);
+      // Match the platform's FE search filter (fullenrichService.ts): send only
+      // `must`, CAPPED at 3, and NEVER `should`. should is used purely for the
+      // client-side overlap signal — putting it in the search body over-narrows
+      // the pool so only near-identical mid-fit profiles (all ~85) are fetched.
+      const MUST_CAP = 3;
+      const skillFilters = mustSkills.slice(0, MUST_CAP).map(v3val).filter(Boolean);
       const baseBody: Record<string, unknown> = {
         limit: 100,
         current_position_titles: titles.map(v3val).filter(Boolean),
@@ -484,12 +489,11 @@ export function registerSearchTools(server: McpServer): void {
         if (batch.length < 100) break; // exhausted
       }
 
-      // Pre-rank by the fast skill-overlap jdScore.
-      scored.sort((a, b) => b.jdScore - a.jdScore);
-
-      // Stage 2 — AI compatibility scoring (score-candidate, lite). This is the
-      // score the platform actually displays and sorts on. Bounded to the top
-      // `ai_score_top` by jdScore to cap the OpenAI cost.
+      // Stage 2 — AI compatibility scoring (score-candidate, lite) = the score
+      // the platform shows and sorts on. Like AdvancedSearch ("Score ALL
+      // candidates, no pre-ranking by keyword overlap"), score in FullEnrich
+      // ARRIVAL order — NOT pre-ranked by jdScore, so a high-AI/low-overlap
+      // profile is never excluded. ai_score_top bounds the OpenAI cost.
       let aiScoredCount = 0;
       if (ai_score !== false && scored.length) {
         const jdText = [jd.job_summary, jd.job_description, jd.key_responsibilities, jd.requirements]
@@ -516,18 +520,20 @@ export function registerSearchTools(server: McpServer): void {
                   aiScoredCount++;
                 }
               } catch {
-                // leave aiScore null — falls back to jdScore in the final sort
+                // leave aiScore null
               }
             }),
           );
         }
-        // Re-rank the AI-scored head by compatibility score (then jdScore).
-        toScore.sort((a, b) => (b.aiScore ?? -1) - (a.aiScore ?? -1) || b.jdScore - a.jdScore);
-        for (let i = 0; i < toScore.length; i++) scored[i] = toScore[i];
       }
 
+      // Final sort: AI compatibility ONLY (null -> 0), like the platform
+      // (AdvancedSearch sorts by getScore()?.score ?? 0). No jdScore fallback,
+      // so the ordering matches even when only part of the pool is scored.
+      scored.sort((a, b) => (b.aiScore ?? 0) - (a.aiScore ?? 0));
+
       const candidates = scored.slice(0, size).map((c) => ({
-        score: c.aiScore ?? c.jdScore,
+        score: c.aiScore ?? 0,
         aiScore: c.aiScore,
         jdScore: c.jdScore,
         fullName: c.fullName,
