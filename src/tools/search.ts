@@ -177,6 +177,10 @@ export function registerSearchTools(server: McpServer): void {
         "get_jd_search_results(jd_id) to fetch the rest.",
       inputSchema: {
         jd_id: z.string().uuid(),
+        location: z
+          .string()
+          .optional()
+          .describe("Location filter for FullEnrich (defaults to the JD's location). E.g. 'France', 'Paris'."),
         language: z.string().optional().describe("BCP-47 language for title expansion (default 'fr')"),
         wait_seconds: z
           .number()
@@ -188,10 +192,10 @@ export function registerSearchTools(server: McpServer): void {
       },
       annotations: { readOnlyHint: false, openWorldHint: true },
     },
-    async ({ jd_id, language, wait_seconds }) => {
+    async ({ jd_id, location, language, wait_seconds }) => {
       const { data: jd, error: jdErr } = await supabase
         .from("job_descriptions")
-        .select("id,enterprise_id,job_title,requirements,qualifications,soft_skills")
+        .select("id,enterprise_id,job_title,location,requirements,qualifications,soft_skills")
         .eq("id", jd_id)
         .maybeSingle();
       if (jdErr) return err(jdErr.message);
@@ -208,6 +212,7 @@ export function registerSearchTools(server: McpServer): void {
         job_title: jd.job_title,
         must_skills: mustSkills,
         should_skills: shouldSkills,
+        location: location ?? jd.location ?? undefined,
         language: language ?? "fr",
       });
 
