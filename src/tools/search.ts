@@ -1,8 +1,29 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { supabase } from "../supabase.js";
+import { readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { supabase, SESSION_FILE } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
 import { ok, err, authedRegisterTool } from "../util.js";
+
+// Disk cache for the LLM-derived search params (extract-search-params +
+// expand-job-title run at temperature>0, so they vary run-to-run). Caching by
+// JD makes repeat searches reproducible. Lives next to the session file.
+const PARAMS_CACHE_FILE = join(dirname(SESSION_FILE), "search-params-cache.json");
+function readParamsCache(): Record<string, any> {
+  try {
+    return JSON.parse(readFileSync(PARAMS_CACHE_FILE, "utf8"));
+  } catch {
+    return {};
+  }
+}
+function writeParamsCache(cache: Record<string, any>): void {
+  try {
+    writeFileSync(PARAMS_CACHE_FILE, JSON.stringify(cache, null, 2));
+  } catch {
+    // best-effort cache
+  }
+}
 
 // FullEnrich v2 wants each filter as { value, exact_match, exclude }. Let callers
 // pass plain strings (e.g. "Community Manager") and wrap them automatically.
@@ -385,11 +406,16 @@ export function registerSearchTools(server: McpServer): void {
           .min(1)
           .max(5000)
           .default(120)
-          .describe("How many candidates (in FullEnrich arrival order, NOT pre-ranked) to AI-score; caps the OpenAI cost. The platform scores all — raise for closer parity."),
+          .describe("How many candidates (title-relevance order) to AI-score; caps the OpenAI cost. The platform scores its whole filtered pool — raise toward `analyzed` for full parity."),
+        refresh: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe("Recompute and re-cache the derived search params (title expansion + extracted skills/location) for this JD instead of reusing the deterministic disk cache."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ jd_id, location, size, max_pages, expand_title, ai_score, ai_score_top }) => {
+    async ({ jd_id, location, size, max_pages, expand_title, ai_score, ai_score_top, refresh }) => {
       const { data: jd, error: jdErr } = await supabase
         .from("job_descriptions")
         .select(
@@ -401,9 +427,10 @@ export function registerSearchTools(server: McpServer): void {
       if (!jd) return err(`JD ${jd_id} not found.`);
       if (!jd.job_title) return err("JD has no job_title.");
 
-      // Derive the search params from the JD EXACTLY like the platform's
-      // findCandidates (JobDescriptions.tsx) → extract-search-params edge:
-      // titleKeywords (English), city, country, mustSkills, shouldSkills.
+      // Derive the search params EXACTLY like the platform's findCandidates
+      // (JobDescriptions.tsx -> extract-search-params edge) + expand-job-title.
+      // Both run at temperature>0, so cache the result per JD on disk to make
+      // repeat searches REPRODUCIBLE (pass refresh:true to recompute).
       const fallbackCity = jd.location ? String(jd.location).split(",")[0].trim() : "";
       const fallbackCountry =
         jd.location && String(jd.location).includes(",")
@@ -414,44 +441,60 @@ export function registerSearchTools(server: McpServer): void {
       ]
         .filter(Boolean)
         .join("\n\n");
-      let titleKeyword = String(jd.job_title);
-      let city = fallbackCity;
-      let country = fallbackCountry;
-      let mustSkills: string[] = [];
-      let shouldSkills: string[] = [];
-      try {
-        const sp = (await invokeEdge("extract-search-params", {
-          jdText: spText,
-          jobTitle: jd.job_title,
-          language: "fr",
-        })) as { result?: any };
-        const r = sp?.result ?? {};
-        if (r.titleKeywords) titleKeyword = String(r.titleKeywords);
-        if (r.city) city = String(r.city);
-        if (r.country) country = String(r.country);
-        if (Array.isArray(r.mustSkills)) mustSkills = r.mustSkills.filter(Boolean);
-        if (Array.isArray(r.shouldSkills)) shouldSkills = r.shouldSkills.filter(Boolean);
-      } catch {
-        // fall back to the JD's own fields below
+
+      const cacheKey = `${jd_id}|loc=${(location ?? "").trim().toLowerCase()}|exp=${expand_title !== false}`;
+      const paramsCache = readParamsCache();
+      let titleKeyword: string;
+      let city: string;
+      let country: string;
+      let mustSkills: string[];
+      let shouldSkills: string[];
+      let titles: string[];
+      let fromCache = false;
+      const cached = refresh ? undefined : paramsCache[cacheKey];
+      if (cached) {
+        ({ titleKeyword, city, country, mustSkills, shouldSkills, titles } = cached);
+        fromCache = true;
+      } else {
+        titleKeyword = String(jd.job_title);
+        city = fallbackCity;
+        country = fallbackCountry;
+        mustSkills = [];
+        shouldSkills = [];
+        try {
+          const sp = (await invokeEdge("extract-search-params", {
+            jdText: spText,
+            jobTitle: jd.job_title,
+            language: "fr",
+          })) as { result?: any };
+          const r = sp?.result ?? {};
+          if (r.titleKeywords) titleKeyword = String(r.titleKeywords);
+          if (r.city) city = String(r.city);
+          if (r.country) country = String(r.country);
+          if (Array.isArray(r.mustSkills)) mustSkills = r.mustSkills.filter(Boolean);
+          if (Array.isArray(r.shouldSkills)) shouldSkills = r.shouldSkills.filter(Boolean);
+        } catch {
+          // fall back to the JD's own fields below
+        }
+        if (!mustSkills.length) mustSkills = splitSkills(jd.requirements);
+        if (!shouldSkills.length)
+          shouldSkills = [...splitSkills(jd.qualifications), ...splitSkills(jd.soft_skills)];
+        titles = [titleKeyword];
+        if (expand_title !== false) {
+          try {
+            const exp = (await invokeEdge("expand-job-title", { title: titleKeyword })) as { titles?: string[] };
+            if (Array.isArray(exp?.titles) && exp.titles.length) titles = exp.titles;
+          } catch {
+            // fall back to the single title
+          }
+        }
+        paramsCache[cacheKey] = { titleKeyword, city, country, mustSkills, shouldSkills, titles };
+        writeParamsCache(paramsCache);
       }
-      if (!mustSkills.length) mustSkills = splitSkills(jd.requirements);
-      if (!shouldSkills.length)
-        shouldSkills = [...splitSkills(jd.qualifications), ...splitSkills(jd.soft_skills)];
 
       // Location: explicit override > extracted/JD city+country.
       const locValue =
         (location && location.trim()) || normalizeLocation([city, country].filter(Boolean).join(", "));
-
-      // Expand the (English) title into synonyms — the platform does this too.
-      let titles: string[] = [titleKeyword];
-      if (expand_title !== false) {
-        try {
-          const exp = (await invokeEdge("expand-job-title", { title: titleKeyword })) as { titles?: string[] };
-          if (Array.isArray(exp?.titles) && exp.titles.length) titles = exp.titles;
-        } catch {
-          // fall back to the single title
-        }
-      }
       const titleKeywords = titles.join(", ");
 
       // Match the platform's FE search filter (fullenrichService.ts): send only
@@ -613,6 +656,7 @@ export function registerSearchTools(server: McpServer): void {
         jd_id,
         job_title: jd.job_title,
         search_params: { title: titleKeyword, city, country, must: mustSkills, should: shouldSkills },
+        params_cached: fromCache,
         years_filter: years,
         expanded_titles: titles,
         location_filter: locValue || null,
