@@ -37,6 +37,56 @@ function splitSkills(v: unknown): string[] {
     .filter((s) => s.length > 1 && s.length < 60);
 }
 
+// ── FullEnrich JD-search helpers (mirror app's src/services/fullenrichService.ts) ──
+const COUNTRY_MAP: Record<string, string> = {
+  FR: "France", GB: "United Kingdom", UK: "United Kingdom", US: "United States",
+  USA: "United States", BE: "Belgium", CH: "Switzerland", DE: "Germany", ES: "Spain",
+  IT: "Italy", NL: "Netherlands", CA: "Canada", AU: "Australia", BR: "Brazil",
+  PT: "Portugal", IL: "Israel", LU: "Luxembourg", MA: "Morocco", DZ: "Algeria",
+  TN: "Tunisia", SN: "Senegal",
+};
+function normalizeLocation(raw: string): string {
+  const s = String(raw ?? "").trim();
+  if (!s) return "";
+  const up = s.toUpperCase();
+  if (/^[A-Z]{2,3}$/.test(up)) return COUNTRY_MAP[up] ?? s;
+  return s; // "Paris, France" / "France" — FullEnrich matches fuzzily
+}
+function v3val(value: string): { value: string; exact_match: boolean; exclude: boolean } | null {
+  const v = String(value ?? "").trim();
+  return v ? { value: v, exact_match: false, exclude: false } : null;
+}
+function normTok(s: string): string {
+  return String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+function matchLoose(profileSkills: string[], jdSkills: string[]): string[] {
+  const pn = profileSkills.map(normTok);
+  return jdSkills.filter((j) => {
+    const jn = normTok(j);
+    return jn ? pn.some((p) => p.includes(jn) || jn.includes(p)) : false;
+  });
+}
+function feMapPerson(p: any) {
+  const cur = p?.employment?.current ?? {};
+  const skills = Array.isArray(p?.skills)
+    ? p.skills.map((x: any) => (typeof x === "string" ? x : x?.name ?? x?.label ?? "")).filter(Boolean)
+    : [];
+  return {
+    fullName: p?.full_name || [p?.first_name, p?.last_name].filter(Boolean).join(" "),
+    title: cur?.title ?? p?.title ?? "",
+    company: cur?.company?.name ?? "",
+    location: [p?.location?.city, p?.location?.country].filter(Boolean).join(", "),
+    linkedinUrl: p?.social_profiles?.professional_network?.url ?? p?.linkedin_url ?? "",
+    skills: skills as string[],
+  };
+}
+function fePickPeople(raw: any): any[] {
+  return Array.isArray(raw?.result?.people) ? raw.result.people
+    : Array.isArray(raw?.people) ? raw.people
+    : Array.isArray(raw?.results) ? raw.results
+    : Array.isArray(raw) ? raw : [];
+}
+
 export function registerSearchTools(server: McpServer): void {
   const registerTool = authedRegisterTool(server);
   registerTool(
@@ -168,126 +218,82 @@ export function registerSearchTools(server: McpServer): void {
   registerTool(
     "search_jd_candidates",
     {
-      title: "Source candidates for a JD (real FullEnrich pipeline)",
+      title: "Source candidates for a JD (FullEnrich, location-aware)",
       description:
-        "Runs the SAME sourcing pipeline as the app — the `jd-search-background` edge function — for a job " +
-        "description: it expands the title (LLM), searches FullEnrich, scores each profile against the JD, and " +
-        "caches the results in jd_search_cache. Looks the JD up by id for enterprise_id / job_title / skills, kicks " +
-        "off the background search, then polls for up to `wait_seconds`. If it is still running, call " +
-        "get_jd_search_results(jd_id) to fetch the rest.",
+        "Sources candidates for a job description via FullEnrich — mirrors the app's searchAndAdaptByJDMax: builds " +
+        "current_position_titles from the JD title, person_locations from the JD location (overridable), and " +
+        "person_skills from requirements/qualifications, then scores each profile against the JD skills and returns " +
+        "the top matches sorted by score. Synchronous and honours location (no background edge job).",
       inputSchema: {
         jd_id: z.string().uuid(),
         location: z
           .string()
           .optional()
-          .describe("Location filter for FullEnrich (defaults to the JD's location). E.g. 'France', 'Paris'."),
-        language: z.string().optional().describe("BCP-47 language for title expansion (default 'fr')"),
-        wait_seconds: z
-          .number()
-          .int()
-          .min(0)
-          .max(120)
-          .default(45)
-          .describe("How long to poll jd_search_cache for results before returning"),
+          .describe("Override the location filter (defaults to the JD's location). E.g. 'France', 'Paris, France'."),
+        size: z.number().int().min(1).max(100).default(25).describe("How many top candidates to return"),
       },
-      annotations: { readOnlyHint: false, openWorldHint: true },
+      annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ jd_id, location, language, wait_seconds }) => {
+    async ({ jd_id, location, size }) => {
       const { data: jd, error: jdErr } = await supabase
         .from("job_descriptions")
-        .select("id,enterprise_id,job_title,location,requirements,qualifications,soft_skills")
+        .select("id,job_title,location,requirements,qualifications,soft_skills")
         .eq("id", jd_id)
         .maybeSingle();
       if (jdErr) return err(jdErr.message);
       if (!jd) return err(`JD ${jd_id} not found.`);
-      if (!jd.enterprise_id || !jd.job_title) return err("JD is missing enterprise_id or job_title.");
+      if (!jd.job_title) return err("JD has no job_title.");
 
       const mustSkills = splitSkills(jd.requirements);
       const shouldSkills = [...splitSkills(jd.qualifications), ...splitSkills(jd.soft_skills)];
+      const locValue = normalizeLocation(location ?? jd.location ?? "");
+      const titles = String(jd.job_title).split(/[,\n;|]/).map((t) => t.trim()).filter(Boolean);
 
-      // Kick off the same background pipeline the app uses (returns 202 immediately).
-      await invokeEdge("jd-search-background", {
-        enterprise_id: jd.enterprise_id,
-        job_id: jd.id,
-        job_title: jd.job_title,
-        must_skills: mustSkills,
-        should_skills: shouldSkills,
-        location: location ?? jd.location ?? undefined,
-        language: language ?? "fr",
-      });
+      const body: Record<string, unknown> = {
+        limit: size,
+        current_position_titles: titles.map(v3val).filter(Boolean),
+      };
+      const skillFilters = [...mustSkills, ...shouldSkills].map(v3val).filter(Boolean);
+      if (skillFilters.length) body.person_skills = skillFilters;
+      if (locValue) body.person_locations = [v3val(locValue)].filter(Boolean);
 
-      // Poll jd_search_cache until the run is done or we run out of time.
-      const deadline = Date.now() + wait_seconds * 1000;
-      let cache: { status?: string; total_count?: number; results?: unknown } | null = null;
-      do {
-        await new Promise((r) => setTimeout(r, 2500));
-        const { data } = await supabase
-          .from("jd_search_cache")
-          .select("status,total_count,results")
-          .eq("enterprise_id", jd.enterprise_id)
-          .eq("job_id", jd.id)
-          .maybeSingle();
-        cache = data;
-      } while ((!cache || cache.status !== "done") && Date.now() < deadline);
-
-      const candidates = Array.isArray(cache?.results) ? cache.results : [];
-      return ok({
-        jd_id,
-        job_title: jd.job_title,
-        status: cache?.status ?? "pending",
-        analyzed: cache?.total_count ?? candidates.length,
-        returned: candidates.length,
-        candidates,
-        note:
-          cache?.status === "done"
-            ? undefined
-            : "Still running — call get_jd_search_results(jd_id) again shortly for the full set.",
-      });
-    },
-  );
-
-  registerTool(
-    "get_jd_search_results",
-    {
-      title: "Get cached candidate-search results for a JD",
-      description:
-        "Reads jd_search_cache for a JD (populated by search_jd_candidates or the app's background search). " +
-        "Returns the search status and the scored candidates.",
-      inputSchema: { jd_id: z.string().uuid() },
-      annotations: { readOnlyHint: true, idempotentHint: true },
-    },
-    async ({ jd_id }) => {
-      const { data: jd, error: jdErr } = await supabase
-        .from("job_descriptions")
-        .select("id,enterprise_id,job_title")
-        .eq("id", jd_id)
-        .maybeSingle();
-      if (jdErr) return err(jdErr.message);
-      if (!jd) return err(`JD ${jd_id} not found.`);
-      const { data: cache, error: cErr } = await supabase
-        .from("jd_search_cache")
-        .select("status,total_count,results,updated_at")
-        .eq("enterprise_id", jd.enterprise_id)
-        .eq("job_id", jd.id)
-        .maybeSingle();
-      if (cErr) return err(cErr.message);
-      if (!cache) {
-        return ok({
-          jd_id,
-          status: "none",
-          candidates: [],
-          note: "No search has been run for this JD yet — call search_jd_candidates first.",
-        });
+      let raw = (await invokeEdge("fullenrich-proxy", { action: "search", body })) as any;
+      let people = fePickPeople(raw);
+      // Fallback: if the skill filter zeroed out results, retry without it (keep location).
+      if (people.length === 0 && skillFilters.length) {
+        const noSkills = { ...body };
+        delete (noSkills as Record<string, unknown>).person_skills;
+        raw = (await invokeEdge("fullenrich-proxy", { action: "search", body: noSkills })) as any;
+        people = fePickPeople(raw);
       }
-      const candidates = Array.isArray(cache.results) ? cache.results : [];
+
+      const scored = people
+        .map((p: any) => {
+          const m = feMapPerson(p);
+          const matchedMust = matchLoose(m.skills, mustSkills);
+          const matchedShould = matchLoose(m.skills, shouldSkills);
+          const total = mustSkills.length + shouldSkills.length;
+          const jdScore =
+            total > 0 ? Math.round(((matchedMust.length + matchedShould.length) / total) * 100) : 50;
+          return {
+            jdScore,
+            fullName: m.fullName,
+            title: m.title,
+            company: m.company,
+            location: m.location,
+            linkedinUrl: m.linkedinUrl,
+            matchedMust,
+          };
+        })
+        .sort((a: { jdScore: number }, b: { jdScore: number }) => b.jdScore - a.jdScore);
+
       return ok({
         jd_id,
         job_title: jd.job_title,
-        status: cache.status,
-        analyzed: cache.total_count,
-        returned: candidates.length,
-        updated_at: cache.updated_at,
-        candidates,
+        location_filter: locValue || null,
+        total_in_db: raw?.result?.metadata?.total ?? raw?.metadata?.total ?? null,
+        returned: scored.length,
+        candidates: scored.slice(0, size),
       });
     },
   );
