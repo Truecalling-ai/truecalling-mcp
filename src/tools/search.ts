@@ -80,6 +80,28 @@ function feMapPerson(p: any) {
     skills: skills as string[],
   };
 }
+// Convert a FullEnrich profile to the CV object the score-candidate edge expects
+// (mirror of fepersonToCVObject in src/pages/AdvancedSearch.tsx).
+function feToCv(p: any): Record<string, unknown> {
+  const emp = p?.employment ?? {};
+  const all = Array.isArray(emp.all) ? emp.all : emp.current ? [emp.current] : [];
+  const skills = Array.isArray(p?.skills)
+    ? p.skills.map((x: any) => (typeof x === "string" ? x : x?.name ?? x?.label ?? "")).filter(Boolean)
+    : [];
+  return {
+    name: p?.full_name || [p?.first_name, p?.last_name].filter(Boolean).join(" "),
+    currentTitle: emp.current?.title ?? p?.title ?? "",
+    location: [p?.location?.city, p?.location?.country].filter(Boolean).join(", "),
+    totalExperienceYears: 0,
+    skills,
+    linkedinUrl: p?.social_profiles?.professional_network?.url ?? "",
+    experience: all.map((e: any) => ({
+      title: e?.title ?? "",
+      company: e?.company?.name ?? "",
+      duration: [e?.start_at, e?.end_at].filter(Boolean).join("–"),
+    })),
+  };
+}
 function fePickPeople(raw: any): any[] {
   return Array.isArray(raw?.result?.people) ? raw.result.people
     : Array.isArray(raw?.people) ? raw.people
@@ -262,13 +284,29 @@ export function registerSearchTools(server: McpServer): void {
           .optional()
           .default(true)
           .describe("LLM-expand the JD title into synonyms before searching (like the platform)."),
+        ai_score: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe(
+            "Stage 2: AI compatibility scoring (score-candidate edge) — this is the score the platform shows/sorts on. Costs 1 OpenAI call per candidate scored. Set false to return only the fast jdScore.",
+          ),
+        ai_score_top: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .default(20)
+          .describe("How many top-jdScore candidates to AI-score (caps the OpenAI cost), then re-rank by compatibility."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ jd_id, location, size, max_pages, expand_title }) => {
+    async ({ jd_id, location, size, max_pages, expand_title, ai_score, ai_score_top }) => {
       const { data: jd, error: jdErr } = await supabase
         .from("job_descriptions")
-        .select("id,job_title,location,requirements,qualifications,soft_skills")
+        .select(
+          "id,job_title,location,job_summary,job_description,key_responsibilities,requirements,qualifications,soft_skills",
+        )
         .eq("id", jd_id)
         .maybeSingle();
       if (jdErr) return err(jdErr.message);
@@ -346,13 +384,68 @@ export function registerSearchTools(server: McpServer): void {
             location: m.location,
             linkedinUrl: m.linkedinUrl,
             matchedMust,
+            cv: feToCv(p),
+            aiScore: null as number | null,
+            aiMatching: null as string[] | null,
           });
         }
 
         if (batch.length < 100) break; // exhausted
       }
 
+      // Pre-rank by the fast skill-overlap jdScore.
       scored.sort((a, b) => b.jdScore - a.jdScore);
+
+      // Stage 2 — AI compatibility scoring (score-candidate, lite). This is the
+      // score the platform actually displays and sorts on. Bounded to the top
+      // `ai_score_top` by jdScore to cap the OpenAI cost.
+      let aiScoredCount = 0;
+      if (ai_score !== false && scored.length) {
+        const jdText = [jd.job_summary, jd.job_description, jd.key_responsibilities, jd.requirements]
+          .filter(Boolean)
+          .join("\n");
+        const toScore = scored.slice(0, Math.min(ai_score_top, scored.length));
+        const CONCURRENCY = 5;
+        for (let i = 0; i < toScore.length; i += CONCURRENCY) {
+          const batch = toScore.slice(i, i + CONCURRENCY);
+          await Promise.all(
+            batch.map(async (cand) => {
+              try {
+                const res = (await invokeEdge("score-candidate", {
+                  cvContent: cand.cv,
+                  jobDescription: jdText,
+                  jobTitle: jd.job_title,
+                  language: "fr",
+                  lite: true,
+                })) as { result?: { compatibilityScore?: number; matchingSkills?: string[] } };
+                const sr = res?.result ?? (res as any);
+                if (typeof sr?.compatibilityScore === "number") {
+                  cand.aiScore = sr.compatibilityScore;
+                  cand.aiMatching = sr.matchingSkills ?? [];
+                  aiScoredCount++;
+                }
+              } catch {
+                // leave aiScore null — falls back to jdScore in the final sort
+              }
+            }),
+          );
+        }
+        // Re-rank the AI-scored head by compatibility score (then jdScore).
+        toScore.sort((a, b) => (b.aiScore ?? -1) - (a.aiScore ?? -1) || b.jdScore - a.jdScore);
+        for (let i = 0; i < toScore.length; i++) scored[i] = toScore[i];
+      }
+
+      const candidates = scored.slice(0, size).map((c) => ({
+        score: c.aiScore ?? c.jdScore,
+        aiScore: c.aiScore,
+        jdScore: c.jdScore,
+        fullName: c.fullName,
+        title: c.title,
+        company: c.company,
+        location: c.location,
+        linkedinUrl: c.linkedinUrl,
+        matching: c.aiMatching ?? c.matchedMust,
+      }));
       return ok({
         jd_id,
         job_title: jd.job_title,
@@ -360,8 +453,10 @@ export function registerSearchTools(server: McpServer): void {
         location_filter: locValue || null,
         total_in_db: totalInDb,
         analyzed: scored.length,
-        returned: Math.min(scored.length, size),
-        candidates: scored.slice(0, size),
+        ai_scored: aiScoredCount,
+        score_field: ai_score !== false ? "compatibility (AI) — same as the platform" : "jdScore (skill overlap)",
+        returned: candidates.length,
+        candidates,
       });
     },
   );
