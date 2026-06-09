@@ -359,7 +359,7 @@ export function registerSearchTools(server: McpServer): void {
       const { data: jd, error: jdErr } = await supabase
         .from("job_descriptions")
         .select(
-          "id,job_title,location,job_summary,job_description,key_responsibilities,requirements,qualifications,soft_skills",
+          "id,job_title,location,job_summary,job_description,key_responsibilities,expectation,requirements,qualifications,soft_skills",
         )
         .eq("id", jd_id)
         .maybeSingle();
@@ -367,18 +367,55 @@ export function registerSearchTools(server: McpServer): void {
       if (!jd) return err(`JD ${jd_id} not found.`);
       if (!jd.job_title) return err("JD has no job_title.");
 
-      const mustSkills = splitSkills(jd.requirements);
-      const shouldSkills = [...splitSkills(jd.qualifications), ...splitSkills(jd.soft_skills)];
-      const locValue = normalizeLocation(location ?? jd.location ?? "");
+      // Derive the search params from the JD EXACTLY like the platform's
+      // findCandidates (JobDescriptions.tsx) → extract-search-params edge:
+      // titleKeywords (English), city, country, mustSkills, shouldSkills.
+      const fallbackCity = jd.location ? String(jd.location).split(",")[0].trim() : "";
+      const fallbackCountry =
+        jd.location && String(jd.location).includes(",")
+          ? String(jd.location).split(",").slice(1).join(",").trim()
+          : "";
+      const spText = [
+        jd.job_summary, jd.job_description, jd.key_responsibilities, jd.expectation, jd.requirements, jd.qualifications,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      let titleKeyword = String(jd.job_title);
+      let city = fallbackCity;
+      let country = fallbackCountry;
+      let mustSkills: string[] = [];
+      let shouldSkills: string[] = [];
+      try {
+        const sp = (await invokeEdge("extract-search-params", {
+          jdText: spText,
+          jobTitle: jd.job_title,
+          language: "fr",
+        })) as { result?: any };
+        const r = sp?.result ?? {};
+        if (r.titleKeywords) titleKeyword = String(r.titleKeywords);
+        if (r.city) city = String(r.city);
+        if (r.country) country = String(r.country);
+        if (Array.isArray(r.mustSkills)) mustSkills = r.mustSkills.filter(Boolean);
+        if (Array.isArray(r.shouldSkills)) shouldSkills = r.shouldSkills.filter(Boolean);
+      } catch {
+        // fall back to the JD's own fields below
+      }
+      if (!mustSkills.length) mustSkills = splitSkills(jd.requirements);
+      if (!shouldSkills.length)
+        shouldSkills = [...splitSkills(jd.qualifications), ...splitSkills(jd.soft_skills)];
 
-      // 1. Expand the title into synonyms (the platform does this before searching).
-      let titles: string[] = [String(jd.job_title)];
+      // Location: explicit override > extracted/JD city+country.
+      const locValue =
+        (location && location.trim()) || normalizeLocation([city, country].filter(Boolean).join(", "));
+
+      // Expand the (English) title into synonyms — the platform does this too.
+      let titles: string[] = [titleKeyword];
       if (expand_title !== false) {
         try {
-          const exp = (await invokeEdge("expand-job-title", { title: jd.job_title })) as { titles?: string[] };
+          const exp = (await invokeEdge("expand-job-title", { title: titleKeyword })) as { titles?: string[] };
           if (Array.isArray(exp?.titles) && exp.titles.length) titles = exp.titles;
         } catch {
-          // fall back to the raw title
+          // fall back to the single title
         }
       }
       const titleKeywords = titles.join(", ");
@@ -503,6 +540,7 @@ export function registerSearchTools(server: McpServer): void {
       return ok({
         jd_id,
         job_title: jd.job_title,
+        search_params: { title: titleKeyword, city, country, must: mustSkills, should: shouldSkills },
         expanded_titles: titles,
         location_filter: locValue || null,
         total_in_db: totalInDb,
