@@ -22,7 +22,7 @@ export function registerCandidatesTools(server: McpServer): void {
       inputSchema: {
         job_description_id: z.string().uuid().optional().describe("Filter by JD UUID"),
         status: z.string().optional().describe("Pipeline status (e.g. 'new', 'screening', 'interview', 'hired')"),
-        search: z.string().optional().describe("Substring match on candidate_name (ilike %search%)"),
+        search: z.string().optional().describe("Substring match on candidate_name OR job_title (ilike %search%)"),
         limit: z.number().int().min(1).max(200).default(50),
         offset: z.number().int().min(0).default(0),
       },
@@ -32,7 +32,14 @@ export function registerCandidatesTools(server: McpServer): void {
       let q = supabase.from("candidates").select(CANDIDATE_COLUMNS).range(offset, offset + limit - 1);
       if (job_description_id) q = q.eq("job_description_id", job_description_id);
       if (status) q = q.eq("status", status);
-      if (search) q = q.ilike("candidate_name", `%${search}%`);
+      if (search) {
+        // Search name AND job_title so e.g. "SAP" matches "Consultant SAP" even
+        // when it isn't in the candidate's name. .or() takes a raw filter string
+        // with no value parameterization, so strip the chars that are structural
+        // in PostgREST filters to avoid breaking/altering the query.
+        const term = search.replace(/[,()*\\]/g, "").trim();
+        q = q.or(`candidate_name.ilike.%${term}%,job_title.ilike.%${term}%`);
+      }
       const { data, error } = await q;
       if (error) return err(error.message);
       return ok({ count: data?.length ?? 0, candidates: data ?? [] });
