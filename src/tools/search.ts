@@ -383,7 +383,7 @@ export function registerSearchTools(server: McpServer): void {
           .number()
           .int()
           .min(1)
-          .max(250)
+          .max(5000)
           .default(120)
           .describe("How many candidates (in FullEnrich arrival order, NOT pre-ranked) to AI-score; caps the OpenAI cost. The platform scores all — raise for closer parity."),
       },
