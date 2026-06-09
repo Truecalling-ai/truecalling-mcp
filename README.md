@@ -26,9 +26,31 @@ All tools authenticate as a real TrueCalling user → **RLS applies**. You only 
 - A TrueCalling account (email + password)
 - Claude Code installed locally
 
-## Installation — zero-config (recommended)
+## Installation — one line (recommended)
 
-Add this entry to `~/.claude.json` under `mcpServers` — nothing to clone, nothing to build:
+### macOS / Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Truecalling-ai/truecalling-mcp/main/install.sh | bash
+```
+
+### Windows (PowerShell)
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/Truecalling-ai/truecalling-mcp/main/install.ps1 | iex
+```
+
+That's it. The installer:
+- Checks you have Node.js 20+ installed (if not, links you to nodejs.org).
+- Backs up `~/.claude.json` (timestamped) before touching it.
+- Safely merges the `truecalling` entry into `mcpServers` — other entries are preserved.
+- Idempotent: re-run any time, no duplicates.
+
+After it finishes, **reload Claude Code** (`Cmd/Ctrl+Shift+P` → "Developer: Reload Window") and you're done. Tools appear as `mcp__truecalling__<name>`.
+
+**No `.env` editing needed.** Supabase URL + anon key ship as defaults. Credentials are collected interactively by Claude on first use — see "First use — sign in" below.
+
+### What gets added to `~/.claude.json`
 
 ```json
 {
@@ -42,17 +64,11 @@ Add this entry to `~/.claude.json` under `mcpServers` — nothing to clone, noth
 }
 ```
 
-That's it. **Restart Claude Code.**
+First launch takes ~10–30 seconds (`npx` clones + builds the server in its cache). Subsequent launches are instant.
 
-Behind the scenes, `npx` clones the repo into its cache, runs the `prepare` script which auto-builds the TypeScript, and starts the MCP server. First start takes ~10–30 seconds; subsequent starts are instant (cached).
+### Why `npx` and not a local clone
 
-**No `.env` editing needed.** Supabase URL + anon key ship as defaults. Credentials are collected interactively by Claude on first use — see "First use — sign in" below.
-
-Tools appear as `mcp__truecalling__<name>` (e.g. `mcp__truecalling__list_candidates`).
-
-### Why `npx` and not `node /path/to/dist/index.js`
-
-VS Code (and some other apps that launch Claude Code as an extension) start child processes with a minimal `PATH` that may not include the user's `node` binary. `npx` is always findable via the same mechanism Claude Code already uses for other MCP servers, so it just works on macOS/Linux/Windows without hardcoding a node path.
+VS Code (and some other apps that launch Claude Code as an extension) start child processes with a minimal `PATH` that may not include the user's `node` binary. `npx` is always findable via the same mechanism Claude Code already uses for other MCP servers, so this just works on macOS/Linux/Windows without hardcoding a node path.
 
 ## Alternative — local clone (for development)
 
