@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { supabase } from "./supabase.js";
+import { registerAuthTools } from "./tools/auth.js";
 import { registerCandidatesTools } from "./tools/candidates.js";
 import { registerJobsTools } from "./tools/jobs.js";
 import { registerSearchTools } from "./tools/search.js";
@@ -13,11 +15,13 @@ import { registerBatchTools } from "./tools/batch.js";
 async function main() {
   const server = new McpServer({
     name: "truecalling-mcp-server",
-    version: "0.1.0",
+    version: "0.2.0",
   });
 
-  // Auth is lazy: getAccessToken() calls ensureAuth() on first tool invocation.
-  // This way tools/list still works even if TC_PASSWORD is missing.
+  // Register auth tools FIRST so tc_login appears at the top of tools/list.
+  // Auth is lazy: tools/list works pre-auth; only handler invocation needs a session.
+  registerAuthTools(server);
+
   registerCandidatesTools(server);
   registerJobsTools(server);
   registerSearchTools(server);
@@ -26,6 +30,13 @@ async function main() {
   registerReportsTools(server);
   registerEnterprisesTools(server);
   registerBatchTools(server);
+
+  // Stop the auto-refresh setTimeout on shutdown so the process can exit cleanly.
+  const shutdown = () => {
+    supabase.auth.stopAutoRefresh().catch(() => undefined);
+  };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
 
   const transport = new StdioServerTransport();
   await server.connect(transport);

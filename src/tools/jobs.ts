@@ -2,14 +2,15 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { supabase } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
-import { ok, err, guardWrite } from "../util.js";
+import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
 
 const JD_COLUMNS =
   "id,enterprise_id,team_leader_id,job_title,job_summary,key_responsibilities," +
   "location,remote,salary_min,salary_max,ai_traits,is_active,created_at,updated_at";
 
 export function registerJobsTools(server: McpServer): void {
-  server.registerTool(
+  const registerTool = authedRegisterTool(server);
+  registerTool(
     "list_jds",
     {
       title: "List job descriptions",
@@ -33,7 +34,7 @@ export function registerJobsTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_jd",
     {
       title: "Get JD by id",
@@ -49,7 +50,7 @@ export function registerJobsTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "create_jd",
     {
       title: "Create a job description",
@@ -73,7 +74,7 @@ export function registerJobsTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "update_jd",
     {
       title: "Update JD fields",
@@ -93,7 +94,7 @@ export function registerJobsTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "parse_job_text",
     {
       title: "Parse a raw job offer text into structured JD fields",
@@ -112,7 +113,7 @@ export function registerJobsTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "expand_job_title",
     {
       title: "Expand a job title into synonyms / related titles",

@@ -1,10 +1,11 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { invokeEdge } from "../edge.js";
-import { ok } from "../util.js";
+import { ok, authedRegisterTool } from "../util.js";
 
 export function registerSearchTools(server: McpServer): void {
-  server.registerTool(
+  const registerTool = authedRegisterTool(server);
+  registerTool(
     "fullenrich_search",
     {
       title: "Search profiles via FullEnrich",
@@ -27,7 +28,7 @@ export function registerSearchTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "fullenrich_enrich_linkedin",
     {
       title: "Enrich a LinkedIn URL (emails + phones)",
@@ -58,7 +59,7 @@ export function registerSearchTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "fullenrich_poll",
     {
       title: "Poll a FullEnrich enrichment job",
@@ -80,7 +81,7 @@ export function registerSearchTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "search_candidates_pdl",
     {
       title: "Search candidates via People Data Labs",

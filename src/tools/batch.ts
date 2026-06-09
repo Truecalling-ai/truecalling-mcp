@@ -1,10 +1,11 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { invokeEdge } from "../edge.js";
-import { ok, guardWrite } from "../util.js";
+import { ok, guardWrite, authedRegisterTool } from "../util.js";
 
 export function registerBatchTools(server: McpServer): void {
-  server.registerTool(
+  const registerTool = authedRegisterTool(server);
+  registerTool(
     "sweep_enrich_candidates",
     {
       title: "Run the candidate enrichment sweep",
@@ -25,7 +26,7 @@ export function registerBatchTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "recalculate_scores",
     {
       title: "Recalculate AI compatibility scores",
@@ -44,7 +45,7 @@ export function registerBatchTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "compare_jd_candidate",
     {
       title: "Compare a JD and a candidate in depth",
@@ -62,7 +63,7 @@ export function registerBatchTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "match_internal_jds",
     {
       title: "Match a candidate against internal JDs",

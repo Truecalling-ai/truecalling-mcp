@@ -1,18 +1,10 @@
-function requireEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing required env var: ${name}`);
-  return v;
-}
+// Public anon defaults — safe to ship. Override via env if needed.
+const DEFAULT_SUPABASE_URL = "https://gxnriabesrpbgpireubf.supabase.co";
+const DEFAULT_SUPABASE_ANON_KEY =
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imd4bnJpYWJlc3JwYmdwaXJldWJmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY4Nzg1MjksImV4cCI6MjA5MjQ1NDUyOX0.-Wubl7PwAxe5sgv7NEzRhwzEq-ruWmoIFzmPoLTcss4";
 
-export const SUPABASE_URL = requireEnv("SUPABASE_URL");
-export const SUPABASE_ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
-export const TC_EMAIL = process.env.TC_EMAIL ?? "";
-export const TC_PASSWORD = process.env.TC_PASSWORD ?? "";
-
-export function assertCreds(): void {
-  if (!TC_EMAIL) throw new Error("Missing TC_EMAIL in env");
-  if (!TC_PASSWORD) throw new Error("Missing TC_PASSWORD in env — fill it in .env then restart Claude Code");
-}
+export const SUPABASE_URL = process.env.SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
+export const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? DEFAULT_SUPABASE_ANON_KEY;
 
 export const READONLY = process.env.TC_MCP_READONLY === "true";
 

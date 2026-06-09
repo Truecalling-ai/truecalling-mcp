@@ -1,10 +1,11 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { invokeEdge } from "../edge.js";
-import { ok, guardWrite } from "../util.js";
+import { ok, guardWrite, authedRegisterTool } from "../util.js";
 
 export function registerReportsTools(server: McpServer): void {
-  server.registerTool(
+  const registerTool = authedRegisterTool(server);
+  registerTool(
     "generate_candidate_pdf",
     {
       title: "Generate a candidate PDF report",
@@ -21,7 +22,7 @@ export function registerReportsTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "generate_cv",
     {
       title: "Generate a re-formatted CV for a candidate",
@@ -37,7 +38,7 @@ export function registerReportsTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "send_candidate_report",
     {
       title: "Send a candidate report by email",

@@ -2,6 +2,8 @@ import { FUNCTIONS_URL, SUPABASE_ANON_KEY } from "./config.js";
 import { getAccessToken } from "./supabase.js";
 
 export async function invokeEdge<T = unknown>(name: string, body?: unknown): Promise<T> {
+  // getAccessToken throws NotSignedInError if no session is loaded.
+  // Tool handlers should be wrapped with withAuth() to convert that into a user-facing message.
   const token = await getAccessToken();
   const res = await fetch(`${FUNCTIONS_URL}/${name}`, {
     method: "POST",

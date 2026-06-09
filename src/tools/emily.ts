@@ -2,10 +2,11 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { supabase } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
-import { ok, err, guardWrite } from "../util.js";
+import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
 
 export function registerEmilyTools(server: McpServer): void {
-  server.registerTool(
+  const registerTool = authedRegisterTool(server);
+  registerTool(
     "emily_chat",
     {
       title: "Chat with Emily (recruiter AI assistant)",
@@ -24,7 +25,7 @@ export function registerEmilyTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "emily_analyze",
     {
       title: "Emily — analyze a piece of text",
@@ -39,7 +40,7 @@ export function registerEmilyTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "emily_score_screening",
     {
       title: "Emily — score a candidate's screening answers",
@@ -54,7 +55,7 @@ export function registerEmilyTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "send_whatsapp",
     {
       title: "Send a WhatsApp message to a candidate",
@@ -74,7 +75,7 @@ export function registerEmilyTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "list_whatsapp_messages",
     {
       title: "List WhatsApp messages for a candidate",
@@ -97,7 +98,7 @@ export function registerEmilyTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "list_wa_contacts",
     {
       title: "List WhatsApp contacts (wa_contacts table)",

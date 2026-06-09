@@ -2,10 +2,11 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { supabase } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
-import { ok, err, guardWrite } from "../util.js";
+import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
 
 export function registerPsyTools(server: McpServer): void {
-  server.registerTool(
+  const registerTool = authedRegisterTool(server);
+  registerTool(
     "create_psy_assignment",
     {
       title: "Create a psychometric test assignment",
@@ -30,7 +31,7 @@ export function registerPsyTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "list_psy_items",
     {
       title: "List psychometric items for a language",
@@ -45,7 +46,7 @@ export function registerPsyTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_psy_submission",
     {
       title: "Get a psy submission by token",
@@ -66,7 +67,7 @@ export function registerPsyTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "psy_score",
     {
       title: "Score a psy submission via Azure",

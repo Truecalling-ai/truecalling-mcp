@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { supabase } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
-import { ok, err, guardWrite } from "../util.js";
+import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
 
 const CANDIDATE_COLUMNS =
   "id,candidate_name,email,telephone,linkedin,linkedin_url,location,country,job_title," +
@@ -10,7 +10,8 @@ const CANDIDATE_COLUMNS =
   "job_description_id,enterprise_id,needs_enrichment,profile_pic,created_at,updated_at";
 
 export function registerCandidatesTools(server: McpServer): void {
-  server.registerTool(
+  const registerTool = authedRegisterTool(server);
+  registerTool(
     "list_candidates",
     {
       title: "List candidates",
@@ -38,7 +39,7 @@ export function registerCandidatesTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_candidate",
     {
       title: "Get candidate by id",
@@ -56,7 +57,7 @@ export function registerCandidatesTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "update_candidate",
     {
       title: "Update candidate fields",
@@ -79,7 +80,7 @@ export function registerCandidatesTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "update_candidate_status",
     {
       title: "Move candidate in pipeline",
@@ -106,7 +107,7 @@ export function registerCandidatesTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "delete_candidate",
     {
       title: "Soft-delete a candidate",
@@ -130,7 +131,7 @@ export function registerCandidatesTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "score_candidate",
     {
       title: "AI-score a candidate against their JD",
@@ -149,7 +150,7 @@ export function registerCandidatesTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "enrich_candidate",
     {
       title: "Enrich a candidate via FullEnrich",
@@ -168,7 +169,7 @@ export function registerCandidatesTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "extract_cv",
     {
       title: "Extract structured data from a CV URL",
@@ -188,7 +189,7 @@ export function registerCandidatesTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "parse_cv_file",
     {
       title: "Parse a CV file (multipart-like payload)",
@@ -209,7 +210,7 @@ export function registerCandidatesTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "lookup_linkedin_profile",
     {
       title: "Lookup a LinkedIn profile (PDL + Apollo)",

@@ -1,10 +1,11 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { supabase } from "../supabase.js";
-import { ok, err } from "../util.js";
+import { ok, err, authedRegisterTool } from "../util.js";
 
 export function registerEnterprisesTools(server: McpServer): void {
-  server.registerTool(
+  const registerTool = authedRegisterTool(server);
+  registerTool(
     "get_my_enterprise",
     {
       title: "Get the authenticated user's enterprise",
@@ -35,7 +36,7 @@ export function registerEnterprisesTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "list_team_members",
     {
       title: "List team members of an enterprise",
@@ -53,7 +54,7 @@ export function registerEnterprisesTools(server: McpServer): void {
     },
   );
 
-  server.registerTool(
+  registerTool(
     "get_enterprise_config",
     {
       title: "Get enterprise configuration",
