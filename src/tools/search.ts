@@ -462,7 +462,9 @@ export function registerSearchTools(server: McpServer): void {
         if (page === 0) totalInDb = raw?.result?.metadata?.total ?? raw?.metadata?.total ?? null;
 
         for (const p of batch) {
-          if (!passesLightTitleFilter(p, titleKeywords)) continue;
+          // No title filter — the platform's searchPeopleWithRaw keeps every FE
+          // result (FE already filtered by current_position_titles) and only
+          // POST-SORTS by title relevance (done after this loop). Just dedupe.
           const key = String(p?.id || p?.linkedin_url || p?.full_name || "").trim();
           if (key && seen.has(key)) continue;
           if (key) seen.add(key);
@@ -487,6 +489,23 @@ export function registerSearchTools(server: McpServer): void {
         }
 
         if (batch.length < 100) break; // exhausted
+      }
+
+      // Post-sort the whole pool by title-keyword relevance — exactly like the
+      // platform's searchPeopleWithRaw (more matching title synonyms in the
+      // person's title = earlier). This sets the order we AI-score in, so the
+      // most title-relevant candidates are scored first (the platform scores all;
+      // we bound the cost via ai_score_top).
+      const titleTokens = titleKeywords
+        .split(/[,\n;|]/)
+        .map((tk) => tk.trim().toLowerCase())
+        .filter(Boolean);
+      if (titleTokens.length) {
+        scored.sort(
+          (a, b) =>
+            titleTokens.filter((tk) => String(b.title ?? "").toLowerCase().includes(tk)).length -
+            titleTokens.filter((tk) => String(a.title ?? "").toLowerCase().includes(tk)).length,
+        );
       }
 
       // Stage 2 — AI compatibility scoring (score-candidate, lite) = the score
