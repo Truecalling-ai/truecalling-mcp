@@ -55,20 +55,49 @@ export function registerJobsTools(server: McpServer): void {
     {
       title: "Create a job description",
       description:
-        "Insert a new JD. enterprise_id is required (defaults to the authenticated user's enterprise if you fetch it via get_my_enterprise first).",
+        "Insert a new JD. enterprise_id is required (defaults to the authenticated user's enterprise if you fetch it via get_my_enterprise first). " +
+        "By default (auto_enrich) it fills missing requirements/qualifications/soft_skills from the title + summary via parse-job-text, so the JD is immediately sourcing- and scoring-ready (ai_traits is generated server-side by a DB trigger).",
       inputSchema: {
         payload: z
           .record(z.unknown())
           .describe(
             "Object with at minimum: enterprise_id, job_title. Optional: job_summary, key_responsibilities, location, remote, salary_min/max, ai_traits, is_active, team_leader_id.",
           ),
+        auto_enrich: z
+          .boolean()
+          .optional()
+          .default(true)
+          .describe(
+            "Generate missing requirements/qualifications/soft_skills (and summary/responsibilities) from the title via parse-job-text before inserting. Set false to insert the payload verbatim.",
+          ),
       },
       annotations: { readOnlyHint: false, idempotentHint: false },
     },
-    async ({ payload }) => {
+    async ({ payload, auto_enrich }) => {
       const block = guardWrite("create_jd");
       if (block) return block;
-      const { data, error } = await supabase.from("job_descriptions").insert(payload).select().maybeSingle();
+      const p = { ...payload } as Record<string, unknown>;
+      // Auto-fill the structured skill fields the sourcing/scoring pipeline needs,
+      // so a JD created with just a title still works with search_jd_candidates.
+      if (auto_enrich !== false && p.job_title && (!p.requirements || !p.qualifications)) {
+        const text = [p.job_title, p.job_summary, p.key_responsibilities, p.job_description]
+          .filter(Boolean)
+          .join("\n\n");
+        try {
+          const res = await invokeEdge<{ result?: Record<string, unknown> }>("parse-job-text", { text });
+          const r = res?.result ?? {};
+          if (!p.requirements && r.requirements) p.requirements = r.requirements;
+          if (!p.qualifications && r.qualifications) p.qualifications = r.qualifications;
+          if (!p.soft_skills && (r.softSkills ?? r.soft_skills))
+            p.soft_skills = r.softSkills ?? r.soft_skills;
+          if (!p.key_responsibilities && r.key_responsibilities)
+            p.key_responsibilities = r.key_responsibilities;
+          if (!p.job_summary && r.job_summary) p.job_summary = r.job_summary;
+        } catch {
+          // best-effort enrichment — never block the create on it
+        }
+      }
+      const { data, error } = await supabase.from("job_descriptions").insert(p).select().maybeSingle();
       if (error) return err(error.message);
       return ok(data ?? { created: true });
     },
