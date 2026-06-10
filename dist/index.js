@@ -43057,6 +43057,15 @@ function v3val(value) {
   const v = String(value ?? "").trim();
   return v ? { value: v, exact_match: false, exclude: false } : null;
 }
+function cleanRoleTitle(t) {
+  const s = String(t ?? "").trim();
+  const m = s.match(/^(.+?)\s*[-–—/|(]\s*\S/);
+  if (m) {
+    const head2 = m[1].trim();
+    if (head2.length >= 6 && /\s/.test(head2)) return head2;
+  }
+  return s;
+}
 function normTok(s) {
   return String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -43419,6 +43428,7 @@ function registerSearchTools(server) {
         if (!mustSkills.length) mustSkills = splitSkills(jd.requirements);
         if (!shouldSkills.length)
           shouldSkills = [...splitSkills(jd.qualifications), ...splitSkills(jd.soft_skills)];
+        titleKeyword = cleanRoleTitle(titleKeyword);
         titles = [titleKeyword];
         if (expand_title !== false) {
           try {

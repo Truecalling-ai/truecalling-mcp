@@ -77,6 +77,23 @@ function v3val(value: string): { value: string; exact_match: boolean; exclude: b
   const v = String(value ?? "").trim();
   return v ? { value: v, exact_match: false, exclude: false } : null;
 }
+// Strip a trailing sector/qualifier suffix from a role title before searching
+// FullEnrich: "Human Resources Manager - Real Estate" → "Human Resources Manager".
+// extract-search-params is non-deterministic (temp>0) and sometimes keeps the
+// "- <sector>" qualifier, which over-narrows the FE title match and drops valid
+// candidates (e.g. an HR manager who isn't literally "HR Manager - Real Estate").
+// The sector preference still rides along via the should-skills, so AI scoring is
+// unaffected — this only widens the sourcing pool back to what the role implies.
+function cleanRoleTitle(t: string): string {
+  const s = String(t ?? "").trim();
+  const m = s.match(/^(.+?)\s*[-–—/|(]\s*\S/);
+  if (m) {
+    const head = m[1].trim();
+    // Only strip when the head is a real multi-word title (avoid "Co-Founder").
+    if (head.length >= 6 && /\s/.test(head)) return head;
+  }
+  return s;
+}
 function normTok(s: string): string {
   return String(s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
 }
@@ -550,6 +567,10 @@ export function registerSearchTools(server: McpServer): void {
         if (!mustSkills.length) mustSkills = splitSkills(jd.requirements);
         if (!shouldSkills.length)
           shouldSkills = [...splitSkills(jd.qualifications), ...splitSkills(jd.soft_skills)];
+        // Drop a "- <sector>" qualifier so a non-deterministic extraction can't
+        // over-narrow the FE title search (the cause of a Monaco HR run returning
+        // 0 while a clean-title run returned the right candidate).
+        titleKeyword = cleanRoleTitle(titleKeyword);
         titles = [titleKeyword];
         if (expand_title !== false) {
           try {
