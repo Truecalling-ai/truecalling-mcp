@@ -8,6 +8,37 @@ const JD_COLUMNS =
   "id,enterprise_id,team_leader_id,job_title,job_summary,key_responsibilities," +
   "location,remote,salary_min,salary_max,ai_traits,is_active,created_at,updated_at";
 
+// Some callers (and JD generators) pass list-style text fields as JSON arrays,
+// which then render as a raw `["…","…"]` blob. The app/UI expects bulleted
+// strings, so normalize any array on these fields into "• a\n• b".
+const JD_TEXT_FIELDS = [
+  "job_summary",
+  "job_description",
+  "key_responsibilities",
+  "requirements",
+  "qualifications",
+  "soft_skills",
+  "expectation",
+];
+function bulletizeJdText(p: Record<string, unknown>): void {
+  for (const f of JD_TEXT_FIELDS) {
+    let v = p[f];
+    // Also catch JSON-array strings like '["a","b"]' (how an array lands in a text column).
+    if (typeof v === "string" && /^\s*\[/.test(v)) {
+      try {
+        const arr = JSON.parse(v);
+        if (Array.isArray(arr)) v = arr;
+      } catch {
+        // leave as-is
+      }
+    }
+    if (Array.isArray(v)) {
+      const items = v.map((x) => String(x).trim()).filter(Boolean);
+      p[f] = items.length ? "• " + items.join("\n• ") : "";
+    }
+  }
+}
+
 export function registerJobsTools(server: McpServer): void {
   const registerTool = authedRegisterTool(server);
   registerTool(
@@ -97,6 +128,7 @@ export function registerJobsTools(server: McpServer): void {
           // best-effort enrichment — never block the create on it
         }
       }
+      bulletizeJdText(p);
       const { data, error } = await supabase.from("job_descriptions").insert(p).select().maybeSingle();
       if (error) return err(error.message);
       return ok(data ?? { created: true });
@@ -117,7 +149,9 @@ export function registerJobsTools(server: McpServer): void {
     async ({ id, patch }) => {
       const block = guardWrite("update_jd");
       if (block) return block;
-      const { data, error } = await supabase.from("job_descriptions").update(patch).eq("id", id).select().maybeSingle();
+      const patchN = { ...patch } as Record<string, unknown>;
+      bulletizeJdText(patchN);
+      const { data, error } = await supabase.from("job_descriptions").update(patchN).eq("id", id).select().maybeSingle();
       if (error) return err(error.message);
       return ok(data ?? { id, updated: true });
     },
