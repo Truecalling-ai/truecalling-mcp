@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { supabase } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
-import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
+import { ok, err, guardWrite, sanitizeWritable, authedRegisterTool } from "../util.js";
 
 const JD_COLUMNS =
   "id,enterprise_id,team_leader_id,job_title,job_summary,key_responsibilities," +
@@ -108,7 +108,9 @@ export function registerJobsTools(server: McpServer): void {
     async ({ payload, auto_enrich }) => {
       const block = guardWrite("create_jd");
       if (block) return block;
-      const p = { ...payload } as Record<string, unknown>;
+      // Strip prototype-pollution + server-owned id/timestamp keys (keeps
+      // enterprise_id, which a create legitimately needs).
+      const p = sanitizeWritable(payload, "create") as Record<string, unknown>;
       // Auto-fill the structured skill fields the sourcing/scoring pipeline needs,
       // so a JD created with just a title still works with search_jd_candidates.
       if (auto_enrich !== false && p.job_title && (!p.requirements || !p.qualifications)) {
@@ -155,7 +157,9 @@ export function registerJobsTools(server: McpServer): void {
     async ({ id, patch }) => {
       const block = guardWrite("update_jd");
       if (block) return block;
-      const patchN = { ...patch } as Record<string, unknown>;
+      // Strip tenancy/identity keys so a patch can't re-home the JD to another
+      // enterprise or tamper with server-owned columns.
+      const patchN = sanitizeWritable(patch, "update") as Record<string, unknown>;
       bulletizeJdText(patchN);
       const { data, error } = await supabase.from("job_descriptions").update(patchN).eq("id", id).select().maybeSingle();
       if (error) return err(error.message);

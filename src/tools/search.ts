@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { supabase, SESSION_FILE } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
-import { ok, err, authedRegisterTool } from "../util.js";
+import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
 
 // Disk cache for the LLM-derived search params (extract-search-params +
 // expand-job-title run at temperature>0, so they vary run-to-run). Caching by
@@ -331,6 +331,8 @@ export function registerSearchTools(server: McpServer): void {
       annotations: { readOnlyHint: false, idempotentHint: false },
     },
     async ({ linkedin_url }) => {
+      const block = guardWrite("fullenrich_enrich_linkedin");
+      if (block) return block;
       const start = await invokeEdge<{ result?: { enrichment_id?: string; id?: string } } | Record<string, unknown>>(
         "fullenrich-proxy",
         {
@@ -351,7 +353,6 @@ export function registerSearchTools(server: McpServer): void {
       return ok({
         enrichment_id: sr?.enrichment_id ?? sr?.id ?? null,
         message: "Poll with fullenrich_poll(enrich_id, force_results=true) — typically 30-120s.",
-        raw: start,
       });
     },
   );
@@ -365,17 +366,23 @@ export function registerSearchTools(server: McpServer): void {
       inputSchema: {
         enrich_id: z.string().describe("Job id returned by fullenrich_enrich_linkedin"),
         force_results: z.boolean().default(false),
+        raw: z
+          .boolean()
+          .default(false)
+          .describe("Include the full raw FullEnrich payload (lots of personal PII + big). Off by default."),
       },
       annotations: { readOnlyHint: true },
     },
-    async ({ enrich_id, force_results }) => {
+    async ({ enrich_id, force_results, raw }) => {
       const result = await invokeEdge("fullenrich-proxy", {
         action: "enrich_poll",
         enrichId: enrich_id,
         forceResults: force_results,
       });
-      // Surface a clean contacts block (emails/phones); keep raw for anything else.
-      return ok({ ...extractFeContacts(result), raw: result });
+      // Surface only a clean contacts block by default; the raw payload is paid
+      // PII (every email/phone + provider metadata) — opt in with raw:true.
+      const compact = extractFeContacts(result);
+      return ok(raw ? { ...compact, raw: result } : compact);
     },
   );
 

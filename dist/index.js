@@ -42285,6 +42285,14 @@ function guardWrite(toolName) {
   }
   return null;
 }
+var PROTO_KEYS = ["__proto__", "constructor", "prototype"];
+var STRIP_ALWAYS = [...PROTO_KEYS, "id", "created_at", "updated_at"];
+var STRIP_ON_UPDATE = [...STRIP_ALWAYS, "enterprise_id", "linkedin_norm"];
+function sanitizeWritable(obj, mode) {
+  const out = { ...obj };
+  for (const k of mode === "update" ? STRIP_ON_UPDATE : STRIP_ALWAYS) delete out[k];
+  return out;
+}
 function notSignedInError() {
   return {
     isError: true,
@@ -42471,6 +42479,10 @@ function normalizeLinkedIn(input) {
   const m = s.match(/^(https:\/\/www\.linkedin\.com\/in\/[^/?#]+)/i);
   return m ? m[1] : s;
 }
+function contactPublic(contact) {
+  const { raw: _raw, ...rest } = contact;
+  return rest;
+}
 async function resolveEnterpriseId() {
   const { data: userData } = await supabase.auth.getUser();
   const authUserId = userData.user?.id;
@@ -42553,7 +42565,9 @@ function registerCandidatesTools(server) {
         telephone: telephone && telephone.length ? telephone : null,
         status: status ?? "sourced",
         source: source ?? "mcp",
-        ...extra ?? {}
+        // extra is free-form: strip identity/tenancy keys so it can't override
+        // the resolved enterprise_id or inject a dedupe-key/id.
+        ...sanitizeWritable(extra ?? {}, "update")
       };
       const { data, error: error2 } = await supabase.from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
       if (error2) return err(error2.message);
@@ -42593,14 +42607,21 @@ function registerCandidatesTools(server) {
     {
       title: "Get candidate by id",
       description: "Fetch one candidate with full detail (CV analysis, fullenrich_contact, scores). Returns null if not found or RLS hides the row.",
-      inputSchema: { id: external_exports.string().uuid().describe("Candidate UUID") },
+      inputSchema: {
+        id: external_exports.string().uuid().describe("Candidate UUID"),
+        include_raw_contact: external_exports.boolean().default(false).describe("Include the raw fullenrich_contact blob (all emails/phones + provider metadata). Off by default.")
+      },
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
-    async ({ id }) => {
+    async ({ id, include_raw_contact }) => {
       const { data, error: error2 } = await supabase.from("candidates").select("*").eq("id", id).maybeSingle();
       if (error2) return err(error2.message);
       if (!data) return err(`Candidate ${id} not found (or hidden by RLS). Try list_candidates() first.`);
-      return ok(data);
+      const row = data;
+      if (!include_raw_contact && row.fullenrich_contact) {
+        return ok({ ...row, fullenrich_contact: "[omitted \u2014 pass include_raw_contact:true to fetch]" });
+      }
+      return ok(row);
     }
   );
   registerTool(
@@ -42617,7 +42638,8 @@ function registerCandidatesTools(server) {
     async ({ id, patch }) => {
       const block = guardWrite("update_candidate");
       if (block) return block;
-      const { data, error: error2 } = await supabase.from("candidates").update(patch).eq("id", id).select().maybeSingle();
+      const patchN = sanitizeWritable(patch, "update");
+      const { data, error: error2 } = await supabase.from("candidates").update(patchN).eq("id", id).select().maybeSingle();
       if (error2) return err(error2.message);
       return ok(data ?? { id, updated: true });
     }
@@ -42746,9 +42768,9 @@ function registerCandidatesTools(server) {
           needs_enrichment: false
         }).eq("id", id);
         if (uErr)
-          return ok({ candidate_id: id, enrichment_id: enrichmentId, status, contact, db_update_error: uErr.message });
+          return ok({ candidate_id: id, enrichment_id: enrichmentId, status, contact: contactPublic(contact), db_update_error: uErr.message });
       }
-      return ok({ candidate_id: id, enrichment_id: enrichmentId, status, contact });
+      return ok({ candidate_id: id, enrichment_id: enrichmentId, status, contact: contactPublic(contact) });
     }
   );
   registerTool(
@@ -42885,7 +42907,7 @@ function registerJobsTools(server) {
     async ({ payload, auto_enrich }) => {
       const block = guardWrite("create_jd");
       if (block) return block;
-      const p = { ...payload };
+      const p = sanitizeWritable(payload, "create");
       if (auto_enrich !== false && p.job_title && (!p.requirements || !p.qualifications)) {
         const text = [p.job_title, p.job_summary, p.key_responsibilities, p.job_description].filter(Boolean).join("\n\n");
         try {
@@ -42921,7 +42943,7 @@ function registerJobsTools(server) {
     async ({ id, patch }) => {
       const block = guardWrite("update_jd");
       if (block) return block;
-      const patchN = { ...patch };
+      const patchN = sanitizeWritable(patch, "update");
       bulletizeJdText(patchN);
       const { data, error: error2 } = await supabase.from("job_descriptions").update(patchN).eq("id", id).select().maybeSingle();
       if (error2) return err(error2.message);
@@ -43248,6 +43270,8 @@ function registerSearchTools(server) {
       annotations: { readOnlyHint: false, idempotentHint: false }
     },
     async ({ linkedin_url }) => {
+      const block = guardWrite("fullenrich_enrich_linkedin");
+      if (block) return block;
       const start = await invokeEdge(
         "fullenrich-proxy",
         {
@@ -43267,8 +43291,7 @@ function registerSearchTools(server) {
       const sr = start?.result ?? start;
       return ok({
         enrichment_id: sr?.enrichment_id ?? sr?.id ?? null,
-        message: "Poll with fullenrich_poll(enrich_id, force_results=true) \u2014 typically 30-120s.",
-        raw: start
+        message: "Poll with fullenrich_poll(enrich_id, force_results=true) \u2014 typically 30-120s."
       });
     }
   );
@@ -43279,17 +43302,19 @@ function registerSearchTools(server) {
       description: "Polls a FullEnrich bulk-enrich job by ID. Set force_results=true to get partial results even if not FINISHED.",
       inputSchema: {
         enrich_id: external_exports.string().describe("Job id returned by fullenrich_enrich_linkedin"),
-        force_results: external_exports.boolean().default(false)
+        force_results: external_exports.boolean().default(false),
+        raw: external_exports.boolean().default(false).describe("Include the full raw FullEnrich payload (lots of personal PII + big). Off by default.")
       },
       annotations: { readOnlyHint: true }
     },
-    async ({ enrich_id, force_results }) => {
+    async ({ enrich_id, force_results, raw }) => {
       const result = await invokeEdge("fullenrich-proxy", {
         action: "enrich_poll",
         enrichId: enrich_id,
         forceResults: force_results
       });
-      return ok({ ...extractFeContacts(result), raw: result });
+      const compact = extractFeContacts(result);
+      return ok(raw ? { ...compact, raw: result } : compact);
     }
   );
   registerTool(

@@ -25,6 +25,21 @@ export function guardWrite(toolName: string): CallToolResult | null {
   return null;
 }
 
+// Keys a tool caller must never set through a free-form patch/payload/extra
+// object. Defense-in-depth on top of RLS: strips prototype-pollution keys and
+// server-owned identity/timestamp columns always; in "update" mode it also
+// blocks re-homing an existing row to another tenant (enterprise_id) or
+// poisoning the LinkedIn dedupe key.
+const PROTO_KEYS = ["__proto__", "constructor", "prototype"];
+const STRIP_ALWAYS = [...PROTO_KEYS, "id", "created_at", "updated_at"];
+const STRIP_ON_UPDATE = [...STRIP_ALWAYS, "enterprise_id", "linkedin_norm"];
+
+export function sanitizeWritable<T extends Record<string, unknown>>(obj: T, mode: "create" | "update"): T {
+  const out: Record<string, unknown> = { ...obj };
+  for (const k of mode === "update" ? STRIP_ON_UPDATE : STRIP_ALWAYS) delete out[k];
+  return out as T;
+}
+
 /**
  * Canonical not-signed-in error. Returned to the LLM so it knows to call tc_login.
  */

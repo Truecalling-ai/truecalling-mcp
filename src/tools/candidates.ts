@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { supabase } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
-import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
+import { ok, err, guardWrite, sanitizeWritable, authedRegisterTool } from "../util.js";
 
 const CANDIDATE_COLUMNS =
   "id,candidate_name,email,telephone,linkedin,linkedin_url,location,country,job_title," +
@@ -20,6 +20,13 @@ function normalizeLinkedIn(input: string): string {
   s = s.replace(/^https?:\/\/(www\.)?linkedin\.com/i, "https://www.linkedin.com");
   const m = s.match(/^(https:\/\/www\.linkedin\.com\/in\/[^/?#]+)/i);
   return m ? m[1] : s;
+}
+
+// Strip the bulky raw FullEnrich blob (all emails/phones + provider metadata)
+// before returning a contact to the LLM/transcript; keep only projected fields.
+function contactPublic(contact: Record<string, unknown>): Record<string, unknown> {
+  const { raw: _raw, ...rest } = contact;
+  return rest;
 }
 
 // Resolve the caller's enterprise from enterprises_team (same source as
@@ -131,7 +138,9 @@ export function registerCandidatesTools(server: McpServer): void {
         telephone: telephone && telephone.length ? telephone : null,
         status: status ?? "sourced",
         source: source ?? "mcp",
-        ...(extra ?? {}),
+        // extra is free-form: strip identity/tenancy keys so it can't override
+        // the resolved enterprise_id or inject a dedupe-key/id.
+        ...sanitizeWritable(extra ?? {}, "update"),
       };
       const { data, error } = await supabase.from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
       if (error) return err(error.message);
@@ -182,14 +191,25 @@ export function registerCandidatesTools(server: McpServer): void {
       description:
         "Fetch one candidate with full detail (CV analysis, fullenrich_contact, scores). " +
         "Returns null if not found or RLS hides the row.",
-      inputSchema: { id: z.string().uuid().describe("Candidate UUID") },
+      inputSchema: {
+        id: z.string().uuid().describe("Candidate UUID"),
+        include_raw_contact: z
+          .boolean()
+          .default(false)
+          .describe("Include the raw fullenrich_contact blob (all emails/phones + provider metadata). Off by default."),
+      },
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
-    async ({ id }) => {
+    async ({ id, include_raw_contact }) => {
       const { data, error } = await supabase.from("candidates").select("*").eq("id", id).maybeSingle();
       if (error) return err(error.message);
       if (!data) return err(`Candidate ${id} not found (or hidden by RLS). Try list_candidates() first.`);
-      return ok(data);
+      // Don't dump the raw enrichment blob into the transcript unless asked.
+      const row = data as Record<string, unknown>;
+      if (!include_raw_contact && row.fullenrich_contact) {
+        return ok({ ...row, fullenrich_contact: "[omitted — pass include_raw_contact:true to fetch]" });
+      }
+      return ok(row);
     },
   );
 
@@ -210,7 +230,10 @@ export function registerCandidatesTools(server: McpServer): void {
     async ({ id, patch }) => {
       const block = guardWrite("update_candidate");
       if (block) return block;
-      const { data, error } = await supabase.from("candidates").update(patch).eq("id", id).select().maybeSingle();
+      // Strip tenancy/identity/server-owned columns so a caller can't re-home the
+      // row to another enterprise or tamper with scores via a free-form patch.
+      const patchN = sanitizeWritable(patch, "update");
+      const { data, error } = await supabase.from("candidates").update(patchN).eq("id", id).select().maybeSingle();
       if (error) return err(error.message);
       return ok(data ?? { id, updated: true });
     },
@@ -383,9 +406,9 @@ export function registerCandidatesTools(server: McpServer): void {
           })
           .eq("id", id);
         if (uErr)
-          return ok({ candidate_id: id, enrichment_id: enrichmentId, status, contact, db_update_error: uErr.message });
+          return ok({ candidate_id: id, enrichment_id: enrichmentId, status, contact: contactPublic(contact), db_update_error: uErr.message });
       }
-      return ok({ candidate_id: id, enrichment_id: enrichmentId, status, contact });
+      return ok({ candidate_id: id, enrichment_id: enrichmentId, status, contact: contactPublic(contact) });
     },
   );
 
