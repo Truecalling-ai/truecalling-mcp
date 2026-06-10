@@ -20,28 +20,30 @@ src/
 ├── session-file.ts   # atomic 0600 read/write
 ├── edge.ts           # invokeEdge() + transient-retry (429/5xx)
 ├── util.ts           # ok/err, guardWrite, sanitizeWritable, authedRegisterTool
-└── tools/            # 45 tools, grouped by domain
-    auth(3) candidates(11) jobs(6) search(5) emily(6) psy(4) reports(3) enterprises(3) batch(4)
+└── tools/            # 51 tools, grouped by domain
+    auth(3) candidates(11) jobs(6) search(6) emily(7) psy(4) reports(3) enterprises(3) batch(4) analysis(4)
 run.mjs               # launcher: git pull → run bundle
 install.sh / .ps1     # clone + wire ~/.claude.json
 tsup.config.ts        # noExternal bundle
+test/                 # node --test smoke + security tests
 ```
 
 **Auth model:** every tool is wrapped by `authedRegisterTool` → `withAuth` → `ensureAuth` before any query. All calls carry the **user JWT** + public anon key. **RLS in the `api` schema is the only server-side authorization boundary** — there is no service-role key in the MCP (correct, but it means RLS correctness *is* the security perimeter; see [§6](#6-risks)).
 
-**45 tools** (README says 44 — it omits `search_jd_candidates` from the Search row; fix the count):
+**51 tools** (6 added this cycle — see §7):
 
 | Domain | Tools |
 |---|---|
 | Auth (3) | tc_login, tc_logout, tc_auth_status |
-| Candidates (11) | list_candidates, get_candidate, **create_candidate**, update_candidate, update_candidate_status, delete_candidate, score_candidate, enrich_candidate, extract_cv, parse_cv_file, lookup_linkedin_profile |
+| Candidates (11) | list_candidates, get_candidate, create_candidate, update_candidate, update_candidate_status, delete_candidate, score_candidate, enrich_candidate, extract_cv, parse_cv_file, lookup_linkedin_profile |
 | Jobs (6) | list_jds, get_jd, create_jd, update_jd, parse_job_text, expand_job_title |
-| Search (5) | search_jd_candidates, fullenrich_search, fullenrich_enrich_linkedin, fullenrich_poll, search_candidates_pdl |
-| Emily (6) | emily_chat, emily_analyze, emily_score_screening, send_whatsapp, list_whatsapp_messages, list_wa_contacts |
+| Search (6) | search_jd_candidates, fullenrich_search, fullenrich_enrich_linkedin, fullenrich_poll, search_candidates_pdl, **find_recruiter** |
+| Emily (7) | emily_chat, emily_analyze, emily_score_screening, send_whatsapp, list_whatsapp_messages, list_wa_contacts, **generate_writer** |
 | Psy (4) | create_psy_assignment, list_psy_items, get_psy_submission, psy_score |
 | Reports (3) | generate_candidate_pdf, generate_cv, send_candidate_report |
 | Enterprises (3) | get_my_enterprise, list_team_members, get_enterprise_config |
 | Batch (4) | sweep_enrich_candidates, recalculate_scores, compare_jd_candidate, match_internal_jds |
+| Analysis (4) | **generate_interview_questions, analyze_cv_standalone, generate_score_explanation, interpret_psychometric** |
 
 ---
 
@@ -135,14 +137,16 @@ Switched off `npx github:` (cache staleness + corporate-TLS-on-npm) to: **commit
 
 ---
 
-## 10. Still needs manual config / decisions
+## 10. Status
 
-- [ ] **Run Supabase security advisor** on prod (CTO's account) — RLS go/no-go.
-- [ ] **Branch protection + org 2FA** on the MCP repo (auto-update RCE).
-- [ ] Harden launcher git pull; consider signed release tags.
-- [ ] Remove global `sslVerify false` from README; fix tool count 44→45.
-- [ ] Decide which of the §7 gaps to build (recommend: 1–4 first — pure analysis tools, low risk, high recruiter value).
-- [ ] Optional: `concise`/`detail` switch + lower `ai_score_top` ceiling.
+**Done this cycle:** launcher git-pull hardened (hooks/fsmonitor off); README `sslVerify` scoped + tool count fixed; gaps 1–4 + find_recruiter + generate_writer shipped (§7); `test`/`typecheck`/`lint`/`mcp:inspect` added (6 tests pass); install.ps1 hardened for native-stderr (PS 7.3+) — paths-with-spaces + `$LASTEXITCODE` + idempotency verified; Claude Desktop config examples added.
+
+**Still owner-side (cannot fix from MCP code) — do before beta:**
+- [ ] **Run Supabase security advisor** on prod (CTO's account) — RLS go/no-go. The MCP-connected account here lacks org privileges.
+- [ ] **Branch protection + org 2FA** on `Truecalling-ai/truecalling-mcp` (auto-update RCE blast radius).
+- [ ] Consider signed release tags + `git verify-tag` in the launcher (longer-term).
+
+**Optional polish (deferred):** `concise`/`detail` switch on list tools; lower `ai_score_top` ceiling; remaining §7 runners-up (search-jobs, enrich-recruiter, interview scheduling).
 
 ## 11. Deliberately NOT touched
 

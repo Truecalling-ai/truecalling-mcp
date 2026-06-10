@@ -71,6 +71,29 @@ On every launch `run.mjs` does two things: `git pull --ff-only` its own clone (s
 
 To pin the current version (skip the auto-pull), add `"TC_MCP_NO_UPDATE": "1"` to the entry's `env`.
 
+### Claude Desktop
+
+The installer wires **Claude Code** (`~/.claude.json`). For **Claude Desktop**, add the same `truecalling` entry to its own config file, then restart the app:
+
+| OS | Claude Desktop config file |
+|---|---|
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
+
+```json
+{
+  "mcpServers": {
+    "truecalling": {
+      "command": "/abs/path/to/node",
+      "args": ["/Users/you/.truecalling-mcp/run.mjs"],
+      "env": { "PATH": "/abs/path/to/node/dir:/usr/local/bin:/usr/bin:/bin" }
+    }
+  }
+}
+```
+
+On Windows the path is `%LOCALAPPDATA%\truecalling-mcp\repo\run.mjs` and `command` is the absolute `node.exe`. Tip: run the installer once (it computes and writes those absolute paths into `~/.claude.json`), then copy the `truecalling` block from there into the Desktop config.
+
 ## Alternative — local clone (for development)
 
 If you want to hack on the server itself:

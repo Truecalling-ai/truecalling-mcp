@@ -25,6 +25,12 @@
 
 $ErrorActionPreference = 'Stop'
 
+# PowerShell 7.3+ can treat ANY native-command stderr as a terminating error.
+# git writes normal progress ("Cloning into...") to stderr, so without this a
+# perfectly successful clone would throw. Decide success from $LASTEXITCODE
+# instead. (Harmless no-op on Windows PowerShell 5.1.)
+$PSNativeCommandUseErrorActionPreference = $false
+
 # Force TLS 1.2 - Windows PowerShell 5.1 defaults to SSL3/TLS1, which
 # nodejs.org / github.com reject.
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
