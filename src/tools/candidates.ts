@@ -9,8 +9,137 @@ const CANDIDATE_COLUMNS =
   "status,compatibility_score,jd_match_score,matching_skills,missing_skills," +
   "job_description_id,enterprise_id,needs_enrichment,profile_pic,created_at,updated_at";
 
+// Port of the app's fullenrichService.normalizeLinkedIn — used as the dedupe
+// key (linkedin_norm) so a profile saved via the MCP collides with the same
+// person saved from the web app.
+function normalizeLinkedIn(input: string): string {
+  let s = (input || "").trim().replace(/^@/, "").split("?")[0].replace(/\/+$/, "");
+  if (!s) return "";
+  if (/^\/in\//i.test(s)) s = `https://www.linkedin.com${s}`;
+  if (/linkedin\.com/i.test(s) && !/^https?:\/\//i.test(s)) s = `https://${s.replace(/^\/+/, "")}`;
+  s = s.replace(/^https?:\/\/(www\.)?linkedin\.com/i, "https://www.linkedin.com");
+  const m = s.match(/^(https:\/\/www\.linkedin\.com\/in\/[^/?#]+)/i);
+  return m ? m[1] : s;
+}
+
+// Resolve the caller's enterprise from enterprises_team (same source as
+// get_my_enterprise). Returns null id when ambiguous so the tool can ask for
+// an explicit enterprise_id.
+async function resolveEnterpriseId(): Promise<{ id?: string; error?: string }> {
+  const { data: userData } = await supabase.auth.getUser();
+  const authUserId = userData.user?.id;
+  if (!authUserId) return { error: "No authenticated user." };
+  const { data: members, error } = await supabase
+    .from("enterprises_team")
+    .select("enterprise_id")
+    .eq("auth_user_id", authUserId);
+  if (error) return { error: error.message };
+  const ids = [...new Set((members ?? []).map((m) => m.enterprise_id))];
+  if (ids.length === 0) return { error: "Your account is not a member of any enterprise." };
+  if (ids.length > 1)
+    return { error: "You belong to multiple enterprises — pass enterprise_id explicitly (see get_my_enterprise)." };
+  return { id: ids[0] };
+}
+
 export function registerCandidatesTools(server: McpServer): void {
   const registerTool = authedRegisterTool(server);
+
+  registerTool(
+    "create_candidate",
+    {
+      title: "Create / import a candidate (e.g. a sourced LinkedIn profile)",
+      description:
+        "Insert a NEW candidate into api.candidates — the missing step that turns a sourced FullEnrich/LinkedIn " +
+        "profile into a real pipeline candidate you can then enrich_candidate, score_candidate, emily_chat and " +
+        "send_whatsapp. Mirrors the web app's 'add to pipeline' insert. Only candidate_name is required " +
+        "(enterprise_id defaults to your enterprise). Link it to a job with job_description_id. " +
+        "Deduplicates by normalized LinkedIn within the enterprise: if the person is already in the pipeline it " +
+        "returns the existing id (created:false) instead of making a duplicate. Returns the candidate id.",
+      inputSchema: {
+        candidate_name: z.string().min(1),
+        enterprise_id: z.string().uuid().optional().describe("Defaults to your enterprise if omitted."),
+        job_description_id: z.string().uuid().optional().describe("JD to attach this candidate to."),
+        linkedin_url: z.string().optional(),
+        job_title: z.string().optional(),
+        location: z.string().optional(),
+        current_company: z.string().optional(),
+        email: z.string().optional(),
+        telephone: z.array(z.string()).optional(),
+        status: z.string().optional().default("sourced"),
+        source: z.string().optional().default("mcp"),
+        extra: z
+          .record(z.unknown())
+          .optional()
+          .describe("Any extra candidate columns (e.g. compatibility_score, matching_skills)."),
+      },
+      annotations: { readOnlyHint: false, idempotentHint: false },
+    },
+    async ({
+      candidate_name,
+      enterprise_id,
+      job_description_id,
+      linkedin_url,
+      job_title,
+      location,
+      current_company,
+      email,
+      telephone,
+      status,
+      source,
+      extra,
+    }) => {
+      const block = guardWrite("create_candidate");
+      if (block) return block;
+
+      let entId = enterprise_id;
+      if (!entId) {
+        const r = await resolveEnterpriseId();
+        if (r.error) return err(r.error);
+        entId = r.id;
+      }
+
+      const liNorm = linkedin_url ? normalizeLinkedIn(linkedin_url) : "";
+
+      // Dedupe by LinkedIn within the enterprise (the app does the same).
+      if (liNorm) {
+        const { data: dup } = await supabase
+          .from("candidates")
+          .select("id")
+          .eq("enterprise_id", entId)
+          .eq("linkedin_norm", liNorm)
+          .maybeSingle();
+        const dupId = (dup as { id?: string } | null)?.id;
+        if (dupId)
+          return ok({
+            id: dupId,
+            created: false,
+            note: "A candidate with this LinkedIn already exists for the enterprise — returning the existing id.",
+          });
+      }
+
+      const row: Record<string, unknown> = {
+        candidate_name,
+        enterprise_id: entId,
+        job_description_id: job_description_id ?? null,
+        linkedin_url: linkedin_url ?? null,
+        linkedin: linkedin_url ?? null,
+        linkedin_norm: liNorm || null,
+        job_title: job_title ?? null,
+        location: location ?? null,
+        current_company: current_company ?? null,
+        email: email ?? null,
+        telephone: telephone && telephone.length ? telephone : null,
+        status: status ?? "sourced",
+        source: source ?? "mcp",
+        ...(extra ?? {}),
+      };
+      const { data, error } = await supabase.from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
+      if (error) return err(error.message);
+      const created = data as { id?: string } | null;
+      return ok({ id: created?.id, created: true, candidate: created });
+    },
+  );
+
   registerTool(
     "list_candidates",
     {

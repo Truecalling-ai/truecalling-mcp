@@ -42462,8 +42462,105 @@ async function invokeEdge(name, body) {
 
 // src/tools/candidates.ts
 var CANDIDATE_COLUMNS = "id,candidate_name,email,telephone,linkedin,linkedin_url,location,country,job_title,status,compatibility_score,jd_match_score,matching_skills,missing_skills,job_description_id,enterprise_id,needs_enrichment,profile_pic,created_at,updated_at";
+function normalizeLinkedIn(input) {
+  let s = (input || "").trim().replace(/^@/, "").split("?")[0].replace(/\/+$/, "");
+  if (!s) return "";
+  if (/^\/in\//i.test(s)) s = `https://www.linkedin.com${s}`;
+  if (/linkedin\.com/i.test(s) && !/^https?:\/\//i.test(s)) s = `https://${s.replace(/^\/+/, "")}`;
+  s = s.replace(/^https?:\/\/(www\.)?linkedin\.com/i, "https://www.linkedin.com");
+  const m = s.match(/^(https:\/\/www\.linkedin\.com\/in\/[^/?#]+)/i);
+  return m ? m[1] : s;
+}
+async function resolveEnterpriseId() {
+  const { data: userData } = await supabase.auth.getUser();
+  const authUserId = userData.user?.id;
+  if (!authUserId) return { error: "No authenticated user." };
+  const { data: members, error: error2 } = await supabase.from("enterprises_team").select("enterprise_id").eq("auth_user_id", authUserId);
+  if (error2) return { error: error2.message };
+  const ids = [...new Set((members ?? []).map((m) => m.enterprise_id))];
+  if (ids.length === 0) return { error: "Your account is not a member of any enterprise." };
+  if (ids.length > 1)
+    return { error: "You belong to multiple enterprises \u2014 pass enterprise_id explicitly (see get_my_enterprise)." };
+  return { id: ids[0] };
+}
 function registerCandidatesTools(server) {
   const registerTool = authedRegisterTool(server);
+  registerTool(
+    "create_candidate",
+    {
+      title: "Create / import a candidate (e.g. a sourced LinkedIn profile)",
+      description: "Insert a NEW candidate into api.candidates \u2014 the missing step that turns a sourced FullEnrich/LinkedIn profile into a real pipeline candidate you can then enrich_candidate, score_candidate, emily_chat and send_whatsapp. Mirrors the web app's 'add to pipeline' insert. Only candidate_name is required (enterprise_id defaults to your enterprise). Link it to a job with job_description_id. Deduplicates by normalized LinkedIn within the enterprise: if the person is already in the pipeline it returns the existing id (created:false) instead of making a duplicate. Returns the candidate id.",
+      inputSchema: {
+        candidate_name: external_exports.string().min(1),
+        enterprise_id: external_exports.string().uuid().optional().describe("Defaults to your enterprise if omitted."),
+        job_description_id: external_exports.string().uuid().optional().describe("JD to attach this candidate to."),
+        linkedin_url: external_exports.string().optional(),
+        job_title: external_exports.string().optional(),
+        location: external_exports.string().optional(),
+        current_company: external_exports.string().optional(),
+        email: external_exports.string().optional(),
+        telephone: external_exports.array(external_exports.string()).optional(),
+        status: external_exports.string().optional().default("sourced"),
+        source: external_exports.string().optional().default("mcp"),
+        extra: external_exports.record(external_exports.unknown()).optional().describe("Any extra candidate columns (e.g. compatibility_score, matching_skills).")
+      },
+      annotations: { readOnlyHint: false, idempotentHint: false }
+    },
+    async ({
+      candidate_name,
+      enterprise_id,
+      job_description_id,
+      linkedin_url,
+      job_title,
+      location: location2,
+      current_company,
+      email: email2,
+      telephone,
+      status,
+      source,
+      extra
+    }) => {
+      const block = guardWrite("create_candidate");
+      if (block) return block;
+      let entId = enterprise_id;
+      if (!entId) {
+        const r = await resolveEnterpriseId();
+        if (r.error) return err(r.error);
+        entId = r.id;
+      }
+      const liNorm = linkedin_url ? normalizeLinkedIn(linkedin_url) : "";
+      if (liNorm) {
+        const { data: dup } = await supabase.from("candidates").select("id").eq("enterprise_id", entId).eq("linkedin_norm", liNorm).maybeSingle();
+        const dupId = dup?.id;
+        if (dupId)
+          return ok({
+            id: dupId,
+            created: false,
+            note: "A candidate with this LinkedIn already exists for the enterprise \u2014 returning the existing id."
+          });
+      }
+      const row = {
+        candidate_name,
+        enterprise_id: entId,
+        job_description_id: job_description_id ?? null,
+        linkedin_url: linkedin_url ?? null,
+        linkedin: linkedin_url ?? null,
+        linkedin_norm: liNorm || null,
+        job_title: job_title ?? null,
+        location: location2 ?? null,
+        current_company: current_company ?? null,
+        email: email2 ?? null,
+        telephone: telephone && telephone.length ? telephone : null,
+        status: status ?? "sourced",
+        source: source ?? "mcp",
+        ...extra ?? {}
+      };
+      const { data, error: error2 } = await supabase.from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
+      if (error2) return err(error2.message);
+      const created = data;
+      return ok({ id: created?.id, created: true, candidate: created });
+    }
+  );
   registerTool(
     "list_candidates",
     {
