@@ -9,18 +9,63 @@ export function registerEmilyTools(server: McpServer): void {
   registerTool(
     "emily_chat",
     {
-      title: "Chat with Emily (recruiter AI assistant)",
+      title: "Draft an Emily outreach message for a candidate",
       description:
-        "Calls `emily-chat` edge function. Sends a message to Emily and gets her response in the enterprise's configured tone.",
+        "Calls `emily-chat`: Emily DRAFTS a recruiter outreach message (WhatsApp or email) for a candidate, in the " +
+        "enterprise's configured tone. (This is message generation, not a chat-reply loop.) Pass candidate_id and the " +
+        "tool fills name / title / location / skills / role from the candidate row and JD; or pass candidate_name " +
+        "directly. Returns { message, subject }. enterprise_id (for the Emily tone) is derived from the candidate.",
       inputSchema: {
-        message: z.string().min(1),
-        candidate_id: z.string().uuid().optional().describe("Context: discuss a specific candidate"),
-        thread_id: z.string().optional().describe("Continue an existing conversation"),
+        candidate_id: z.string().uuid().optional().describe("Derive the candidate's name + context from their row."),
+        candidate_name: z.string().optional().describe("Required if candidate_id is not given."),
+        job_title: z.string().optional().describe("Role offered; defaults to the candidate's JD title."),
+        channel: z.enum(["whatsapp", "email"]).optional().default("whatsapp"),
+        language: z.string().optional().describe("2-letter code (en, fr, …). Defaults to the enterprise default."),
+        enterprise_id: z.string().uuid().optional().describe("For the Emily tone; derived from the candidate if omitted."),
       },
-      annotations: { readOnlyHint: false, idempotentHint: false },
+      annotations: { readOnlyHint: true, idempotentHint: false },
     },
-    async ({ message, candidate_id, thread_id }) => {
-      const result = await invokeEdge("emily-chat", { message, candidateId: candidate_id, threadId: thread_id });
+    async ({ candidate_id, candidate_name, job_title, channel, language, enterprise_id }) => {
+      let name = candidate_name;
+      let title: string | undefined;
+      let location: string | undefined;
+      let skills: string[] | undefined;
+      let jobTitle = job_title;
+      let entId = enterprise_id;
+      if (candidate_id) {
+        const { data: cand } = await supabase
+          .from("candidates")
+          .select("candidate_name,job_title,location,enterprise_id,job_description_id,matching_skills")
+          .eq("id", candidate_id)
+          .maybeSingle();
+        const c = cand as Record<string, any> | null;
+        if (c) {
+          name = name ?? c.candidate_name;
+          title = c.job_title ?? undefined;
+          location = c.location ?? undefined;
+          entId = entId ?? c.enterprise_id;
+          skills = Array.isArray(c.matching_skills) ? c.matching_skills : undefined;
+          if (!jobTitle && c.job_description_id) {
+            const { data: jd } = await supabase
+              .from("job_descriptions")
+              .select("job_title")
+              .eq("id", c.job_description_id)
+              .maybeSingle();
+            jobTitle = (jd as Record<string, any> | null)?.job_title ?? undefined;
+          }
+        }
+      }
+      if (!name) return err("Provide candidate_id (to look up the name) or candidate_name.");
+      const result = await invokeEdge("emily-chat", {
+        candidateName: name,
+        candidateTitle: title,
+        candidateLocation: location,
+        candidateSkills: skills,
+        jobTitle,
+        channel,
+        language,
+        enterpriseId: entId,
+      });
       return ok(result);
     },
   );
@@ -60,17 +105,42 @@ export function registerEmilyTools(server: McpServer): void {
     {
       title: "Send a WhatsApp message to a candidate",
       description:
-        "Calls `send-whatsapp` edge function. ⚠️ Sends a REAL message via Twilio — costs money and the candidate will see it.",
+        "Calls `send-whatsapp` edge function. ⚠️ Sends a REAL message via Twilio — costs money and the candidate will " +
+        "see it. The edge requires enterpriseId + candidateId + the recipient phone (`to`); this tool derives them from " +
+        "the candidate row (works for multi-enterprise users — the candidate unambiguously belongs to one enterprise). " +
+        "Pass enterprise_id / to to override.",
       inputSchema: {
         candidate_id: z.string().uuid(),
         message: z.string().min(1),
+        enterprise_id: z.string().uuid().optional().describe("Override; defaults to the candidate's enterprise_id."),
+        to: z.string().optional().describe("Override recipient phone; defaults to the candidate's telephone[0]."),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
     },
-    async ({ candidate_id, message }) => {
+    async ({ candidate_id, message, enterprise_id, to }) => {
       const block = guardWrite("send_whatsapp");
       if (block) return block;
-      const result = await invokeEdge("send-whatsapp", { candidateId: candidate_id, message });
+      const { data: cand, error: cErr } = await supabase
+        .from("candidates")
+        .select("id,candidate_name,enterprise_id,telephone,job_description_id,job_title")
+        .eq("id", candidate_id)
+        .maybeSingle();
+      if (cErr) return err(cErr.message);
+      if (!cand) return err(`Candidate ${candidate_id} not found.`);
+      const c = cand as Record<string, any>;
+      const entId = enterprise_id ?? c.enterprise_id;
+      const phone = to ?? (Array.isArray(c.telephone) ? c.telephone[0] : c.telephone);
+      if (!entId) return err("Could not resolve the candidate's enterprise_id — pass enterprise_id explicitly.");
+      if (!phone) return err("Candidate has no phone number; enrich it first or pass `to` explicitly.");
+      const result = await invokeEdge("send-whatsapp", {
+        enterpriseId: entId,
+        candidateId: candidate_id,
+        to: phone,
+        body: message, // the edge's free-text field is `body`, not `message`
+        candidateName: c.candidate_name ?? undefined,
+        jobDescriptionId: c.job_description_id ?? undefined,
+        jobTitle: c.job_title ?? undefined,
+      });
       return ok(result);
     },
   );
