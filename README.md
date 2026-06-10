@@ -94,6 +94,39 @@ Then point `~/.claude.json` at your local checkout:
 }
 ```
 
+## Troubleshooting
+
+### `UNABLE_TO_VERIFY_LEAF_SIGNATURE` / server shows "Failed to connect" behind a corporate network
+
+If install fails with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, or the server registers but shows **Failed to connect** with no output, your network has a **TLS-inspecting proxy / antivirus** presenting a corporate root CA that Node doesn't trust via its bundled CA list. This breaks both the `npm install` of the build deps (tsup/esbuild) **and** the server's HTTPS calls to Supabase at runtime.
+
+**Fix (Node ≥ 20.12 / 22 / 24):** tell Node to trust the OS certificate store with `--use-system-ca`, set in the server's environment so it applies at **build and runtime**:
+
+```bash
+# macOS / Linux / Windows (PowerShell) — re-add with the env var
+claude mcp add truecalling -s user -e NODE_OPTIONS=--use-system-ca -- npx -y github:Truecalling-ai/truecalling-mcp
+```
+
+If `npx` still can't pull the build deps through the proxy, build once locally and point the config at the compiled file:
+
+```powershell
+# Windows (PowerShell)
+git clone https://github.com/Truecalling-ai/truecalling-mcp.git "$env:USERPROFILE\.truecalling-mcp"
+cd "$env:USERPROFILE\.truecalling-mcp"; $env:NODE_OPTIONS="--use-system-ca"; npm install
+claude mcp add truecalling -s user -e NODE_OPTIONS=--use-system-ca -- node "$env:USERPROFILE\.truecalling-mcp\dist\index.js"
+```
+
+This **pins a local build** (no auto-update): run `git pull` + `npm run build` in that folder to refresh.
+
+### Stale version after an update
+
+`npx -y github:...` caches the resolved commit, so a reload may keep serving an old build. Clear the npx cache, then reload Claude Code:
+
+```bash
+rm -rf ~/.npm/_npx                                             # macOS / Linux
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\npm-cache\_npx" # Windows (PowerShell)
+```
+
 ## First use — sign in
 
 The very first time you ask Claude to do anything with TrueCalling, the tool will return a `Not signed in` error. Claude will then ask you for your email and password in chat, and call `tc_login` with them. Your session is cached on disk and auto-refreshed thereafter — you should not need to sign in again unless you `tc_logout` or your refresh token is revoked server-side.
