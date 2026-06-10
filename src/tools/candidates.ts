@@ -162,17 +162,101 @@ export function registerCandidatesTools(server: McpServer): void {
     {
       title: "Enrich a candidate via FullEnrich",
       description:
-        "Runs the FullEnrich enrichment pipeline (linkedin/email/phone discovery) for ONE candidate. " +
-        "Consumes FullEnrich credits ($). Result is stored in candidates.fullenrich_contact + email/telephone columns. " +
-        "Invokes the `sweep-enrich-candidates` edge function in single-candidate mode.",
-      inputSchema: { id: z.string().uuid() },
+        "Runs FullEnrich enrichment (email/phone discovery) for ONE candidate by id, then stores the result on the " +
+        "candidate (email, telephone, fullenrich_contact). Consumes FullEnrich credits ($). Uses the user-callable " +
+        "`fullenrich-proxy` enrich path — NOT the service-role `sweep-enrich-candidates` cron (which 401s for users).",
+      inputSchema: {
+        id: z.string().uuid(),
+        wait_seconds: z
+          .number()
+          .int()
+          .min(0)
+          .max(180)
+          .default(90)
+          .describe("How long to poll FullEnrich for the result before returning."),
+      },
       annotations: { readOnlyHint: false, idempotentHint: false },
     },
-    async ({ id }) => {
+    async ({ id, wait_seconds }) => {
       const block = guardWrite("enrich_candidate");
       if (block) return block;
-      const result = await invokeEdge("sweep-enrich-candidates", { candidateIds: [id] });
-      return ok(result);
+      const { data: cand, error: cErr } = await supabase
+        .from("candidates")
+        .select("id,candidate_name,linkedin_url,linkedin_norm,linkedin")
+        .eq("id", id)
+        .maybeSingle();
+      if (cErr) return err(cErr.message);
+      if (!cand) return err(`Candidate ${id} not found.`);
+      const linkedin = cand.linkedin_url || cand.linkedin_norm || cand.linkedin;
+      if (!linkedin) return err("Candidate has no LinkedIn URL to enrich.");
+
+      const start = (await invokeEdge("fullenrich-proxy", {
+        action: "enrich_start",
+        body: {
+          name: "TrueCalling MCP enrichment",
+          data: [
+            {
+              linkedin_url: linkedin,
+              enrich_fields: ["contact.work_emails", "contact.personal_emails", "contact.phones"],
+              custom: {},
+            },
+          ],
+        },
+      })) as any;
+      const sr = start?.result ?? start;
+      const enrichmentId = sr?.enrichment_id ?? sr?.id;
+      if (!enrichmentId) return err(`FullEnrich returned no enrichment_id: ${JSON.stringify(start).slice(0, 200)}`);
+
+      const deadline = Date.now() + wait_seconds * 1000;
+      let contact: Record<string, unknown> = {};
+      let status = "";
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 5000));
+        const poll = (await invokeEdge("fullenrich-proxy", {
+          action: "enrich_poll",
+          enrichId: enrichmentId,
+          forceResults: true,
+        })) as any;
+        const d = poll?.result ?? poll ?? {};
+        status = d.status ?? d.enrichment_status ?? "";
+        const datas = Array.isArray(d.data) ? d.data : Array.isArray(d.datas) ? d.datas : [];
+        const ci = datas[0]?.contact_info ?? datas[0]?.contact ?? {};
+        const emails = [...(ci.work_emails ?? []), ...(ci.personal_emails ?? []), ...(ci.emails ?? [])]
+          .map((e: any) => e?.email ?? e)
+          .filter(Boolean);
+        const phones = [...(ci.phones ?? []), ...(ci.mobile_phones ?? [])]
+          .map((ph: any) => ph?.number ?? ph)
+          .filter(Boolean);
+        if (emails.length || phones.length) {
+          contact = {
+            work_email: ci.most_probable_work_email?.email ?? null,
+            personal_email: ci.most_probable_personal_email?.email ?? null,
+            phone: ci.most_probable_phone?.number ?? null,
+            all_emails: [...new Set(emails)],
+            all_phones: [...new Set(phones)],
+            raw: ci,
+          };
+          break;
+        }
+        if (/finished|done|complete/i.test(String(status))) break;
+      }
+
+      const email = (contact.work_email ?? contact.personal_email ?? null) as string | null;
+      const phones = (contact.all_phones ?? []) as string[];
+      if (email || phones.length) {
+        const { error: uErr } = await supabase
+          .from("candidates")
+          .update({
+            ...(email ? { email } : {}),
+            ...(phones.length ? { telephone: phones } : {}),
+            fullenrich_contact: contact.raw ?? contact,
+            needs_enrichment: false,
+          })
+          .eq("id", id);
+        if (uErr)
+          return ok({ candidate_id: id, enrichment_id: enrichmentId, status, contact, db_update_error: uErr.message });
+      }
+      return ok({ candidate_id: id, enrichment_id: enrichmentId, status, contact });
     },
   );
 
