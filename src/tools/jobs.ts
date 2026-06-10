@@ -87,7 +87,8 @@ export function registerJobsTools(server: McpServer): void {
       title: "Create a job description",
       description:
         "Insert a new JD. enterprise_id is required (defaults to the authenticated user's enterprise if you fetch it via get_my_enterprise first). " +
-        "By default (auto_enrich) it fills missing requirements/qualifications/soft_skills from the title + summary via parse-job-text, so the JD is immediately sourcing- and scoring-ready (ai_traits is generated server-side by a DB trigger).",
+        "By default (auto_enrich) it fills missing requirements/qualifications/soft_skills from the title + summary via parse-job-text, so the JD is immediately sourcing- and scoring-ready (ai_traits is generated server-side by a DB trigger). " +
+        "LANGUAGE: write all text fields in the language of the role/JD itself (e.g. an English job_summary ⇒ English requirements/soft_skills), not the chat language.",
       inputSchema: {
         payload: z
           .record(z.unknown())
@@ -139,7 +140,12 @@ export function registerJobsTools(server: McpServer): void {
     "update_jd",
     {
       title: "Update JD fields",
-      description: "Partial update on a JD. Pass the fields to change in `patch`.",
+      description:
+        "Partial update on a JD. Pass the fields to change in `patch`. " +
+        "LANGUAGE: any text you write into soft_skills / requirements / qualifications / key_responsibilities / " +
+        "job_summary / job_description MUST be in the SAME language as the existing JD — NOT the chat language. " +
+        "An English JD must stay English even if the conversation is in French. If unsure, call get_jd first and " +
+        "match the language of its current content.",
       inputSchema: {
         id: z.string().uuid(),
         patch: z.record(z.unknown()),
