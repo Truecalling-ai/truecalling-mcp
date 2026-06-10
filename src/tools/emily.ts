@@ -123,4 +123,45 @@ export function registerEmilyTools(server: McpServer): void {
       return ok({ count: data?.length ?? 0, contacts: data ?? [] });
     },
   );
+
+  registerTool(
+    "generate_writer",
+    {
+      title: "Draft an outreach email for a candidate (cold / follow-up)",
+      description:
+        "Calls the `generate-writer` edge function: generates a personalized outreach email (cold_email | followup | " +
+        "custom) for a candidate and PERSISTS it (outreach_samples/history). Returns a flat { success, text, model, " +
+        "tokensUsed, cost, messageVersion, sampleId }. Requires candidate_id, candidate_name, enterprise_id. " +
+        "Server-side it needs NVIDIA_NIM_API_KEY + SUPABASE_DB_URL (else 5xx). Costs LLM credits and writes rows, so " +
+        "it honors TC_MCP_READONLY.",
+      inputSchema: {
+        candidate_id: z.string().uuid(),
+        candidate_name: z.string(),
+        enterprise_id: z.string().uuid(),
+        job_title: z.string().optional(),
+        company_name: z.string().optional(),
+        context: z.string().optional().describe("Extra context to ground the email."),
+        content_type: z.enum(["cold_email", "followup", "custom"]).optional().default("cold_email"),
+        max_tokens: z.number().int().min(50).max(2000).optional().default(500),
+        language: z.string().optional().describe("en, fr, de, es (default en)."),
+      },
+      annotations: { readOnlyHint: false, idempotentHint: false },
+    },
+    async (a) => {
+      const block = guardWrite("generate_writer");
+      if (block) return block;
+      const res = await invokeEdge("generate-writer", {
+        candidateId: a.candidate_id,
+        candidateName: a.candidate_name,
+        enterpriseId: a.enterprise_id,
+        jobTitle: a.job_title,
+        companyName: a.company_name,
+        context: a.context,
+        contentType: a.content_type,
+        maxTokens: a.max_tokens,
+        language: a.language,
+      });
+      return ok(res);
+    },
+  );
 }

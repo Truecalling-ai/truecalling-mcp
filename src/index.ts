@@ -11,6 +11,7 @@ import { registerPsyTools } from "./tools/psy.js";
 import { registerReportsTools } from "./tools/reports.js";
 import { registerEnterprisesTools } from "./tools/enterprises.js";
 import { registerBatchTools } from "./tools/batch.js";
+import { registerAnalysisTools } from "./tools/analysis.js";
 
 async function main() {
   const server = new McpServer({
@@ -30,6 +31,7 @@ async function main() {
   registerReportsTools(server);
   registerEnterprisesTools(server);
   registerBatchTools(server);
+  registerAnalysisTools(server);
 
   // Stop the auto-refresh setTimeout on shutdown so the process can exit cleanly.
   const shutdown = () => {

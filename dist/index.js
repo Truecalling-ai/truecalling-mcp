@@ -43560,6 +43560,29 @@ function registerSearchTools(server) {
       });
     }
   );
+  registerTool(
+    "find_recruiter",
+    {
+      title: "Find the likely recruiter for a role at a company",
+      description: "Calls the `find-recruiter` edge function: SERP + LinkedIn search for the most likely recruiter/hiring contact at a company for a given job title (validates their current employer). Returns { recruiter } (name, LinkedIn link, snippet, location, company, email, phone, photo) or { recruiter: null }. Costs SERP credits; requires SERP_API_KEY configured server-side.",
+      inputSchema: {
+        company: external_exports.string().describe("Target company name."),
+        job_title: external_exports.string().describe("Role to find the recruiter for."),
+        job_location: external_exports.string().optional().describe("Helps disambiguate by location."),
+        lang: external_exports.string().optional().describe("fr, en, de, pt, us (default fr).")
+      },
+      annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: true }
+    },
+    async ({ company, job_title, job_location, lang }) => {
+      const res = await invokeEdge("find-recruiter", {
+        company,
+        jobTitle: job_title,
+        jobLocation: job_location,
+        lang
+      });
+      return ok(res);
+    }
+  );
 }
 
 // src/tools/emily.ts
@@ -43662,6 +43685,41 @@ function registerEmilyTools(server) {
       const { data, error: error2 } = await q;
       if (error2) return err(error2.message);
       return ok({ count: data?.length ?? 0, contacts: data ?? [] });
+    }
+  );
+  registerTool(
+    "generate_writer",
+    {
+      title: "Draft an outreach email for a candidate (cold / follow-up)",
+      description: "Calls the `generate-writer` edge function: generates a personalized outreach email (cold_email | followup | custom) for a candidate and PERSISTS it (outreach_samples/history). Returns a flat { success, text, model, tokensUsed, cost, messageVersion, sampleId }. Requires candidate_id, candidate_name, enterprise_id. Server-side it needs NVIDIA_NIM_API_KEY + SUPABASE_DB_URL (else 5xx). Costs LLM credits and writes rows, so it honors TC_MCP_READONLY.",
+      inputSchema: {
+        candidate_id: external_exports.string().uuid(),
+        candidate_name: external_exports.string(),
+        enterprise_id: external_exports.string().uuid(),
+        job_title: external_exports.string().optional(),
+        company_name: external_exports.string().optional(),
+        context: external_exports.string().optional().describe("Extra context to ground the email."),
+        content_type: external_exports.enum(["cold_email", "followup", "custom"]).optional().default("cold_email"),
+        max_tokens: external_exports.number().int().min(50).max(2e3).optional().default(500),
+        language: external_exports.string().optional().describe("en, fr, de, es (default en).")
+      },
+      annotations: { readOnlyHint: false, idempotentHint: false }
+    },
+    async (a) => {
+      const block = guardWrite("generate_writer");
+      if (block) return block;
+      const res = await invokeEdge("generate-writer", {
+        candidateId: a.candidate_id,
+        candidateName: a.candidate_name,
+        enterpriseId: a.enterprise_id,
+        jobTitle: a.job_title,
+        companyName: a.company_name,
+        context: a.context,
+        contentType: a.content_type,
+        maxTokens: a.max_tokens,
+        language: a.language
+      });
+      return ok(res);
     }
   );
 }
@@ -43927,6 +43985,125 @@ function registerBatchTools(server) {
   );
 }
 
+// src/tools/analysis.ts
+function registerAnalysisTools(server) {
+  const registerTool = authedRegisterTool(server);
+  registerTool(
+    "generate_interview_questions",
+    {
+      title: "Generate interview questions for a candidate \xD7 role",
+      description: "Calls the `generate-interview-questions` edge function: from a job title + an EXISTING compatibility score + matching/missing skills, returns a structured interview-prep plan { behavioralQuestions, technicalQuestions, recruiterFocusAreas }. It does NOT recompute the score \u2014 pass one from score_candidate/compare_jd_candidate. Write the language to match the role/candidate, not the chat.",
+      inputSchema: {
+        job_title: external_exports.string().describe("The role being interviewed for."),
+        score: external_exports.number().min(0).max(100).optional().describe("Existing compatibility score (0-100)."),
+        candidate_name: external_exports.string().optional(),
+        matching_skills: external_exports.array(external_exports.string()).optional().default([]),
+        missing_skills: external_exports.array(external_exports.string()).optional().default([]),
+        language: external_exports.string().optional().describe("2-letter code (en, fr, \u2026). Defaults to the role language."),
+        provider: external_exports.string().optional().describe("LLM provider override (default openai).")
+      },
+      annotations: { readOnlyHint: true, idempotentHint: false }
+    },
+    async ({ job_title, score, candidate_name, matching_skills, missing_skills, language, provider }) => {
+      const res = await invokeEdge("generate-interview-questions", {
+        jobTitle: job_title,
+        score,
+        candidateName: candidate_name,
+        matchingSkills: matching_skills,
+        missingSkills: missing_skills,
+        language,
+        provider
+      });
+      return ok(res?.result ?? res);
+    }
+  );
+  registerTool(
+    "analyze_cv_standalone",
+    {
+      title: "Analyze a CV on its own (no JD needed)",
+      description: "Calls the `analyze-cv-standalone` edge function: evaluates a CV's intrinsic quality (score, skills, soft skills, gaps, improvement points, work history, total years) plus deterministic resilience & digital-reputation scores \u2014 no job description required. Useful to vet a raw CV before create_candidate. cv_content may be plain text or a structured CV object.",
+      inputSchema: {
+        cv_content: external_exports.union([external_exports.string(), external_exports.record(external_exports.unknown())]).describe("Raw CV text, or a structured CV object."),
+        language: external_exports.string().optional(),
+        provider: external_exports.string().optional()
+      },
+      annotations: { readOnlyHint: true, idempotentHint: false }
+    },
+    async ({ cv_content, language, provider }) => {
+      const res = await invokeEdge("analyze-cv-standalone", {
+        cvContent: cv_content,
+        language,
+        provider
+      });
+      return ok(res?.result ?? res);
+    }
+  );
+  registerTool(
+    "generate_score_explanation",
+    {
+      title: "Explain an existing candidate score in plain language",
+      description: "Calls the `generate-score-explanation` edge function: writes a narrative explanation of an ALREADY-computed score (it does not recalculate). compatibility_score is required; the more context you pass (summary, strengths/weaknesses, recommendation), the better the explanation. Pairs with score_candidate.",
+      inputSchema: {
+        compatibility_score: external_exports.number().min(0).max(100),
+        resilience_score: external_exports.number().optional(),
+        digital_reputation_score: external_exports.number().optional(),
+        comparison_summary: external_exports.string().optional(),
+        strengths: external_exports.array(external_exports.string()).optional().default([]),
+        weaknesses: external_exports.array(external_exports.string()).optional().default([]),
+        recommendation: external_exports.string().optional(),
+        job_title: external_exports.string().optional(),
+        candidate_name: external_exports.string().optional(),
+        language: external_exports.string().optional(),
+        provider: external_exports.string().optional()
+      },
+      annotations: { readOnlyHint: true, idempotentHint: false }
+    },
+    async (a) => {
+      const res = await invokeEdge("generate-score-explanation", {
+        compatibilityScore: a.compatibility_score,
+        resilienceScore: a.resilience_score,
+        digitalReputationScore: a.digital_reputation_score,
+        comparisonSummary: a.comparison_summary,
+        strengths: a.strengths,
+        weaknesses: a.weaknesses,
+        recommendation: a.recommendation,
+        jobTitle: a.job_title,
+        candidateName: a.candidate_name,
+        language: a.language,
+        provider: a.provider
+      });
+      return ok(res?.result ?? res);
+    }
+  );
+  registerTool(
+    "interpret_psychometric",
+    {
+      title: "Interpret a candidate's psychometric profile",
+      description: "Calls the `interpret-psychometric` edge function: turns a psychometric profile (dream job, motivations, competencies, CV gaps) into { profileSummary, careerAlignment, keyStrengths, developmentAreas, suggestedRoles, actionPlan }. Complements psy_score (which produces the raw scores).",
+      inputSchema: {
+        dream_job: external_exports.string().optional(),
+        motivations: external_exports.array(external_exports.unknown()).optional().describe("Only the first 5 are used."),
+        competencies: external_exports.array(external_exports.unknown()).optional().describe("Only the first 5 are used."),
+        cv_gaps: external_exports.array(external_exports.unknown()).optional(),
+        language: external_exports.string().optional(),
+        provider: external_exports.string().optional()
+      },
+      annotations: { readOnlyHint: true, idempotentHint: false }
+    },
+    async ({ dream_job, motivations, competencies, cv_gaps, language, provider }) => {
+      const res = await invokeEdge("interpret-psychometric", {
+        dreamjob: dream_job,
+        motivations,
+        competencies,
+        cvGaps: cv_gaps,
+        language,
+        provider
+      });
+      return ok(res?.result ?? res);
+    }
+  );
+}
+
 // src/index.ts
 async function main() {
   const server = new McpServer({
@@ -43942,6 +44119,7 @@ async function main() {
   registerReportsTools(server);
   registerEnterprisesTools(server);
   registerBatchTools(server);
+  registerAnalysisTools(server);
   const shutdown = () => {
     supabase.auth.stopAutoRefresh().catch(() => void 0);
   };

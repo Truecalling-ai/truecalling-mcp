@@ -740,4 +740,32 @@ export function registerSearchTools(server: McpServer): void {
       });
     },
   );
+
+  registerTool(
+    "find_recruiter",
+    {
+      title: "Find the likely recruiter for a role at a company",
+      description:
+        "Calls the `find-recruiter` edge function: SERP + LinkedIn search for the most likely recruiter/hiring contact " +
+        "at a company for a given job title (validates their current employer). Returns { recruiter } (name, LinkedIn " +
+        "link, snippet, location, company, email, phone, photo) or { recruiter: null }. Costs SERP credits; requires " +
+        "SERP_API_KEY configured server-side.",
+      inputSchema: {
+        company: z.string().describe("Target company name."),
+        job_title: z.string().describe("Role to find the recruiter for."),
+        job_location: z.string().optional().describe("Helps disambiguate by location."),
+        lang: z.string().optional().describe("fr, en, de, pt, us (default fr)."),
+      },
+      annotations: { readOnlyHint: true, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ company, job_title, job_location, lang }) => {
+      const res = await invokeEdge<{ recruiter?: unknown }>("find-recruiter", {
+        company,
+        jobTitle: job_title,
+        jobLocation: job_location,
+        lang,
+      });
+      return ok(res);
+    },
+  );
 }
