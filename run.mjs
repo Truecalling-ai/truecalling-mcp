@@ -18,10 +18,13 @@ const dir = dirname(fileURLToPath(import.meta.url));
 
 if (process.env.TC_MCP_NO_UPDATE !== "1") {
   try {
-    spawnSync("git", ["-C", dir, "pull", "--ff-only", "--quiet"], {
-      stdio: "ignore",
-      timeout: 12000,
-    });
+    // Disable hooks + fsmonitor during the auto-update pull so a hook planted in
+    // the local clone's .git can't run arbitrary code as the user on every launch.
+    spawnSync(
+      "git",
+      ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", dir, "pull", "--ff-only", "--quiet"],
+      { stdio: "ignore", timeout: 12000 },
+    );
   } catch {
     // offline / git missing / not a clone — fall through to the bundle on disk
   }
