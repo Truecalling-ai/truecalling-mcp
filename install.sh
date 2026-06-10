@@ -10,13 +10,13 @@
 #   2. If missing or too old, bootstraps Node WITHOUT sudo:
 #        - macOS + brew already installed → `brew install node`
 #        - otherwise → install nvm and `nvm install --lts`
-#   3. Resolves the ABSOLUTE path to node + npx (Claude Code's MCP child
-#      processes inherit a minimal PATH — relative names break under VS Code
-#      launched from Dock/Spotlight).
+#   3. Ensures git, then clones (or pulls) the server to ~/.truecalling-mcp.
+#      The repo ships a committed self-contained bundle — NO npm install — so
+#      this works behind corporate TLS proxies that break esbuild downloads.
 #   4. Locates ~/.claude.json (creates an empty stub if missing) and backs it
 #      up with a timestamp.
-#   5. Merges a `truecalling` entry into `mcpServers` via Node (preserves any
-#      other entries; safe to re-run).
+#   5. Merges a `truecalling` entry into `mcpServers` (command = node run.mjs,
+#      which git-pulls + runs the bundle). Preserves other entries; re-runnable.
 #   6. Prints a clear "now reload Claude Code" instruction.
 # ----------------------------------------------------------------------------
 
@@ -142,53 +142,50 @@ if [ -z "$NODE_BIN" ] || ! node_version_ok "$NODE_BIN"; then
   fail "Could not bootstrap Node.js. Install Node 20+ manually from https://nodejs.org and re-run."
 fi
 
-# ----- 3. Resolve absolute npx-cli.js path ---------------------------------
+# ----- 3. Pre-check git -----------------------------------------------------
 #
-# We DELIBERATELY do NOT use the `npx` shell wrapper as `command`. That
-# wrapper has `#!/usr/bin/env node` at the top — when VS Code spawns the
-# MCP child with a minimal PATH (no `node`), the env-shebang fails to
-# resolve and you get "executable not found in $PATH: npx".
-#
-# Instead we point `command` at the absolute path to `node` and prepend
-# the absolute path to `npx-cli.js` (the JS that the wrapper would have
-# run anyway) as the first arg. No PATH lookup, no env shebang.
-
-NODE_DIR="$(dirname "$NODE_BIN")"
-# npm's `npx-cli.js` lives at <node-prefix>/lib/node_modules/npm/bin/npx-cli.js
-# but the node binary is typically at <node-prefix>/bin/node, so the lib dir
-# is one level up + "lib/node_modules".
-NODE_PREFIX="$(dirname "$NODE_DIR")"
-NPX_CLI="${NODE_PREFIX}/lib/node_modules/npm/bin/npx-cli.js"
-
-if [ ! -f "$NPX_CLI" ]; then
-  # Hunt for it — some distros lay things out differently. First try beside
-  # node, then a recursive find capped at depth 4 under the prefix.
-  ALT="$(find "$NODE_PREFIX" -maxdepth 5 -name 'npx-cli.js' -type f 2>/dev/null | head -1)"
-  if [ -n "$ALT" ]; then
-    NPX_CLI="$ALT"
-  else
-    fail "Could not locate npx-cli.js under ${NODE_PREFIX}. Reinstall Node.js (npm ships with it) and retry."
-  fi
-fi
-
-green "✓ Resolved npx-cli.js at ${NPX_CLI}"
-
-# ----- 3b. Pre-check git (npx -y github:... shells out to git clone) --------
-#
-# On a fresh macOS, `git` triggers the Xcode CLI Tools GUI installer the
-# first time it's invoked. Detect and surface early so the MCP doesn't
-# silently 'connection closed' on first launch.
+# We clone the repo (which ships a committed, self-contained bundle) and the
+# launcher `git pull`s it on every start, so git is required. On a fresh macOS,
+# `git` triggers the Xcode CLI Tools GUI installer the first time it's invoked
+# — surface that early so install doesn't fail mid-clone.
 
 if ! command -v git >/dev/null 2>&1; then
   if [ "$(uname -s)" = "Darwin" ]; then
     yellow "  git is not yet installed. Triggering the Xcode Command Line Tools installer…"
     yellow "  A macOS dialog will appear. Click 'Install' and wait until it finishes, then re-run this script."
     xcode-select --install 2>/dev/null || true
-    fail "git is required (used by npx to clone the MCP server). Re-run after the Xcode CLI Tools install finishes."
+    fail "git is required (used to clone + auto-update the MCP server). Re-run after the Xcode CLI Tools install finishes."
   else
     fail "git is required but not installed. Install it (e.g. 'sudo apt install git') and re-run."
   fi
 fi
+
+# ----- 3b. Clone (or update) the self-contained server ----------------------
+#
+# The repo commits a bundled dist/index.js with every dependency inlined, so
+# there is NO `npm install` — that kills both the npx cache staleness AND the
+# corporate-TLS-on-npm failures. The launcher (run.mjs) `git pull`s this clone
+# on each start, so clients auto-update on reload.
+
+INSTALL_DIR="${HOME}/.truecalling-mcp"
+REPO_URL="https://github.com/Truecalling-ai/truecalling-mcp.git"
+
+if [ -d "${INSTALL_DIR}/.git" ]; then
+  bold "→ Updating existing TrueCalling MCP clone at ${INSTALL_DIR}…"
+  git -C "$INSTALL_DIR" pull --ff-only --quiet >&2 || yellow "  (pull failed — keeping the existing clone)"
+else
+  bold "→ Cloning the TrueCalling MCP server to ${INSTALL_DIR}…"
+  rm -rf "$INSTALL_DIR"
+  if ! git clone --depth 1 "$REPO_URL" "$INSTALL_DIR" >&2; then
+    fail "git clone failed. Check your network (or corporate proxy) and retry."
+  fi
+fi
+
+RUN_MJS="${INSTALL_DIR}/run.mjs"
+if [ ! -f "$RUN_MJS" ]; then
+  fail "Clone succeeded but ${RUN_MJS} is missing. Report this to the TrueCalling team."
+fi
+green "✓ Server ready at ${RUN_MJS}"
 
 # ----- 4. Locate ~/.claude.json --------------------------------------------
 
@@ -204,12 +201,12 @@ green "✓ Backed up existing config → ${BACKUP}"
 
 # ----- 5. Merge the truecalling entry safely via Node ----------------------
 
-TC_NODE_BIN="$NODE_BIN" TC_NPX_CLI="$NPX_CLI" "$NODE_BIN" - "$CLAUDE_JSON" <<'NODE_SCRIPT'
+TC_NODE_BIN="$NODE_BIN" TC_RUN_MJS="$RUN_MJS" "$NODE_BIN" - "$CLAUDE_JSON" <<'NODE_SCRIPT'
 const fs = require('fs');
 const nodePath = require('path');
 const path = process.argv[2];
 const nodeBin = process.env.TC_NODE_BIN;
-const npxCli = process.env.TC_NPX_CLI;
+const runMjs = process.env.TC_RUN_MJS;
 // Defensive BOM strip — some editors (and PowerShell on Windows) write a BOM
 // that breaks JSON.parse. Belt-and-braces here even on Unix.
 const raw = (fs.readFileSync(path, 'utf8') || '{}').replace(/^﻿/, '');
@@ -222,22 +219,19 @@ catch (e) {
 }
 json.mcpServers = json.mcpServers || {};
 const existed = !!json.mcpServers.truecalling;
-// node's own directory — covers node, npm and npx. npx shells out to inner
-// `#!/usr/bin/env node` sub-processes (the package bin + its build step), and
-// VS Code spawns the MCP child with a minimal PATH that lacks node, so those
-// env-node shebangs fail with "env: node: No such file or directory". Put
-// node's dir + the standard system dirs (git, coreutils) on PATH so every
-// inner process resolves.
+// node's own directory + standard system dirs. The launcher (run.mjs) shells
+// out to `git pull`, and VS Code spawns the MCP child with a minimal PATH, so
+// put node's dir + the dirs where git lives on PATH for it to resolve.
 const nodeDir = nodePath.dirname(nodeBin);
 json.mcpServers.truecalling = {
   type: 'stdio',
-  // Absolute path to node + absolute path to npx-cli.js as the first arg.
-  // Sidesteps the env-node shebang inside the `npx` wrapper, which would
-  // fail under VS Code's minimal child PATH.
+  // Absolute node + absolute path to the launcher. run.mjs git-pulls its own
+  // clone (auto-update) then runs the committed self-contained bundle. No npx,
+  // no npm install, no cache — sidesteps both the stale-version and the
+  // corporate-TLS-on-npm problems.
   command: nodeBin,
-  args: [npxCli, '-y', 'github:Truecalling-ai/truecalling-mcp'],
-  // PATH so npx's inner env-node sub-processes resolve under the minimal
-  // child environment (see comment above).
+  args: [runMjs],
+  // PATH so run.mjs's `git pull` resolves under the minimal child environment.
   env: { PATH: nodeDir + ':/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin' },
 };
 // Atomic write: tmp + rename so a crash mid-write never corrupts claude.json.

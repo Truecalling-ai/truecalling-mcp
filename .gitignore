@@ -1,5 +1,8 @@
 node_modules/
-dist/
+# dist/index.js is COMMITTED on purpose: it's a self-contained bundle clients
+# run directly via run.mjs (no npm install / build step on their side).
+dist/*
+!dist/index.js
 .env
 .env.local
 *.log

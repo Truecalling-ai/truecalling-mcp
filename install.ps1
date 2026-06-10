@@ -14,11 +14,12 @@
 #        - on failure, fall back to the portable Node.js zip from nodejs.org
 #          extracted to $env:LOCALAPPDATA\truecalling-mcp\node (no UAC).
 #   3. Refreshes $env:PATH for the current session so subsequent calls work.
-#   4. Resolves the ABSOLUTE path to node.exe + the bundled npx-cli.js
-#      (Claude Code spawns MCP children with shell:false - .cmd shims fail
-#      under that, so we invoke node.exe directly on npx-cli.js).
+#   4. Ensures git, then clones (or pulls) the server to
+#      %LOCALAPPDATA%\truecalling-mcp\repo. The repo ships a committed
+#      self-contained bundle - NO npm install - so this works behind corporate
+#      TLS proxies that break esbuild downloads.
 #   5. Backs up ~/.claude.json with a timestamp and merges the truecalling
-#      entry via the bundled Node (preserves other mcpServers entries).
+#      entry (command = node.exe run.mjs, which git-pulls + runs the bundle).
 #   6. Prints "now reload Claude Code" instructions.
 # ----------------------------------------------------------------------------
 
@@ -190,23 +191,41 @@ if ($finalMajor -lt $NodeMinMajor) {
     Fail "Bootstrapped Node.js is v$finalMajor (need v$NodeMinMajor+)."
 }
 
-# ----- 3. Resolve absolute path to bundled npx-cli.js ----------------------
+# ----- 3. Ensure git, then clone/update the self-contained server ----------
+#
+# The repo commits a bundled dist/index.js with every dependency inlined, so
+# there is NO npm install - that kills both the npx cache staleness AND the
+# corporate-TLS-on-npm failures. run.mjs git-pulls this clone on each start.
 
 $nodeDir = Split-Path $absNode -Parent
-$npxCli  = Join-Path $nodeDir 'node_modules\npm\bin\npx-cli.js'
 
-if (-not (Test-Path $npxCli)) {
-    # Fallback: search a sibling Node install (e.g. winget MSI puts npm under a
-    # different relative path on rare layouts).
-    $alt = Get-ChildItem -Path $nodeDir -Recurse -Filter 'npx-cli.js' -ErrorAction SilentlyContinue |
-           Where-Object { $_.FullName -like '*\npm\bin\npx-cli.js' } | Select-Object -First 1
-    if ($alt) { $npxCli = $alt.FullName }
+$gitCmd = Get-Command git -ErrorAction SilentlyContinue
+if (-not $gitCmd) {
+    Fail "git is required (used to clone + auto-update the MCP server) but was not found. Install Git for Windows from https://git-scm.com/download/win and re-run."
+}
+$gitDir = Split-Path $gitCmd.Source -Parent
+
+$InstallDir = Join-Path $env:LOCALAPPDATA 'truecalling-mcp\repo'
+$RepoUrl    = 'https://github.com/Truecalling-ai/truecalling-mcp.git'
+
+if (Test-Path (Join-Path $InstallDir '.git')) {
+    Write-Bold "-> Updating existing TrueCalling MCP clone at $InstallDir..."
+    & git -C $InstallDir pull --ff-only --quiet 2>&1 | Out-Host
+} else {
+    Write-Bold "-> Cloning the TrueCalling MCP server to $InstallDir..."
+    if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
+    New-Item -ItemType Directory -Force -Path (Split-Path $InstallDir -Parent) | Out-Null
+    & git clone --depth 1 $RepoUrl $InstallDir 2>&1 | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        Fail "git clone failed. Check your network (or corporate proxy) and retry."
+    }
 }
 
-if (-not (Test-Path $npxCli)) {
-    Fail "Could not locate npx-cli.js near $absNode. npm should ship with Node - reinstall and retry."
+$RunMjs = Join-Path $InstallDir 'run.mjs'
+if (-not (Test-Path $RunMjs)) {
+    Fail "Clone succeeded but $RunMjs is missing. Report this to the TrueCalling team."
 }
-Write-OK "+ Resolved npx-cli.js at $npxCli"
+Write-OK "+ Server ready at $RunMjs"
 
 # ----- 4. Locate ~/.claude.json --------------------------------------------
 
@@ -232,7 +251,10 @@ Write-OK "+ Backed up existing config -> $Backup"
 # Pass paths via env vars to dodge the quoting/escaping nightmare.
 $env:TC_CLAUDE_JSON = $ClaudeJson
 $env:TC_NODE_EXE    = $absNode
-$env:TC_NPX_CLI     = $npxCli
+$env:TC_RUN_MJS     = $RunMjs
+# PATH for the spawned launcher so its `git pull` resolves (node dir + git dir
+# + the current PATH).
+$env:TC_PATH        = "$nodeDir;$gitDir;$env:PATH"
 
 $nodeScript = @'
 const fs = require('fs');
@@ -251,8 +273,11 @@ json.mcpServers = json.mcpServers || {};
 const existed = !!json.mcpServers.truecalling;
 json.mcpServers.truecalling = {
   type: 'stdio',
+  // node.exe + the launcher. run.mjs git-pulls its own clone (auto-update)
+  // then runs the committed self-contained bundle. No npx, no npm install.
   command: process.env.TC_NODE_EXE,
-  args: [process.env.TC_NPX_CLI, '-y', 'github:Truecalling-ai/truecalling-mcp']
+  args: [process.env.TC_RUN_MJS],
+  env: { PATH: process.env.TC_PATH }
 };
 // Atomic write: tmp + rename so a crash mid-write never corrupts claude.json.
 const tmp = p + '.tmp.' + process.pid;

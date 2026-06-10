@@ -52,23 +52,24 @@ After it finishes, **reload Claude Code** (`Cmd/Ctrl+Shift+P` → "Developer: Re
 
 ### What gets added to `~/.claude.json`
 
+The installer clones the server to `~/.truecalling-mcp` (Windows: `%LOCALAPPDATA%\truecalling-mcp\repo`) and points Claude Code at the launcher `run.mjs`, using an absolute path to `node` (VS Code spawns MCP children with a minimal `PATH`):
+
 ```json
 {
   "mcpServers": {
     "truecalling": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "github:Truecalling-ai/truecalling-mcp"]
+      "command": "/abs/path/to/node",
+      "args": ["/Users/you/.truecalling-mcp/run.mjs"],
+      "env": { "PATH": "/abs/path/to/node/dir:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" }
     }
   }
 }
 ```
 
-First launch takes ~10–30 seconds (`npx` clones + builds the server in its cache). Subsequent launches are instant.
+On every launch `run.mjs` does two things: `git pull --ff-only` its own clone (so you **auto-update on reload**), then run the committed **self-contained bundle** `dist/index.js`. That bundle inlines every dependency, so there is **no `npm install` on your machine** — which kills both the old npx cache staleness *and* the corporate-TLS-proxy failures that broke `npm`/esbuild downloads. First launch is instant (the clone already contains the prebuilt bundle).
 
-### Why `npx` and not a local clone
-
-VS Code (and some other apps that launch Claude Code as an extension) start child processes with a minimal `PATH` that may not include the user's `node` binary. `npx` is always findable via the same mechanism Claude Code already uses for other MCP servers, so this just works on macOS/Linux/Windows without hardcoding a node path.
+To pin the current version (skip the auto-pull), add `"TC_MCP_NO_UPDATE": "1"` to the entry's `env`.
 
 ## Alternative — local clone (for development)
 
@@ -98,34 +99,35 @@ Then point `~/.claude.json` at your local checkout:
 
 ### `UNABLE_TO_VERIFY_LEAF_SIGNATURE` / server shows "Failed to connect" behind a corporate network
 
-If install fails with `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, or the server registers but shows **Failed to connect** with no output, your network has a **TLS-inspecting proxy / antivirus** presenting a corporate root CA that Node doesn't trust via its bundled CA list. This breaks both the `npm install` of the build deps (tsup/esbuild) **and** the server's HTTPS calls to Supabase at runtime.
+If the server registers but shows **Failed to connect** with no output, your network has a **TLS-inspecting proxy / antivirus** presenting a corporate root CA that Node doesn't trust via its bundled CA list. The server's HTTPS calls to Supabase then fail.
 
-**Fix (Node ≥ 20.12 / 22 / 24):** tell Node to trust the OS certificate store with `--use-system-ca`, set in the server's environment so it applies at **build and runtime**:
+> Note: the self-contained bundle means there's **no `npm install`** anymore, so the old esbuild/tsup download failure is gone. What remains is (a) the **runtime** HTTPS to Supabase and (b) the **`git clone`/`pull`** through the proxy.
+
+**(a) Runtime — Node ≥ 20.12 / 22 / 24:** tell Node to trust the OS certificate store with `--use-system-ca`. Add it to the `truecalling` entry's `env` in `~/.claude.json`:
+
+```jsonc
+"env": { "NODE_OPTIONS": "--use-system-ca", "PATH": "…" }
+```
+
+**(b) git through the proxy:** point git at the corporate CA bundle so clone/pull succeed:
 
 ```bash
-# macOS / Linux / Windows (PowerShell) — re-add with the env var
-claude mcp add truecalling -s user -e NODE_OPTIONS=--use-system-ca -- npx -y github:Truecalling-ai/truecalling-mcp
+git config --global http.sslCAInfo /path/to/corporate-root-ca.pem
+# (last resort, less safe) git config --global http.sslVerify false
 ```
 
-If `npx` still can't pull the build deps through the proxy, build once locally and point the config at the compiled file:
-
-```powershell
-# Windows (PowerShell)
-git clone https://github.com/Truecalling-ai/truecalling-mcp.git "$env:USERPROFILE\.truecalling-mcp"
-cd "$env:USERPROFILE\.truecalling-mcp"; $env:NODE_OPTIONS="--use-system-ca"; npm install
-claude mcp add truecalling -s user -e NODE_OPTIONS=--use-system-ca -- node "$env:USERPROFILE\.truecalling-mcp\dist\index.js"
-```
-
-This **pins a local build** (no auto-update): run `git pull` + `npm run build` in that folder to refresh.
+Then re-run the installer (it'll clone with your git settings) and reload Claude Code.
 
 ### Stale version after an update
 
-`npx -y github:...` caches the resolved commit, so a reload may keep serving an old build. Clear the npx cache, then reload Claude Code:
+The launcher auto-updates on each reload (`git pull` in `~/.truecalling-mcp`). If you're still on an old build, the pull is failing silently — run it by hand to see why (network/proxy, or local edits blocking a fast-forward):
 
 ```bash
-rm -rf ~/.npm/_npx                                             # macOS / Linux
-Remove-Item -Recurse -Force "$env:LOCALAPPDATA\npm-cache\_npx" # Windows (PowerShell)
+git -C ~/.truecalling-mcp pull --ff-only                         # macOS / Linux
+git -C "$env:LOCALAPPDATA\truecalling-mcp\repo" pull --ff-only   # Windows (PowerShell)
 ```
+
+Then reload Claude Code. (Older installs used `npx github:…`, which cached the commit — if your `~/.claude.json` entry still points at `npx`, re-run the installer to switch to the auto-updating launcher.)
 
 ## First use — sign in
 
