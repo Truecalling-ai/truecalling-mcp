@@ -43547,19 +43547,25 @@ function registerSearchTools(server) {
         }
       }
       scored.sort((a, b) => (b.aiScore ?? 0) - (a.aiScore ?? 0));
-      const candidates = scored.slice(0, size).map((c) => ({
-        score: c.aiScore ?? 0,
-        aiScore: c.aiScore,
-        jdScore: c.jdScore,
-        resilienceScore: c.resilienceScore,
-        digitalReputationScore: c.digitalReputationScore,
-        fullName: c.fullName,
-        title: c.title,
-        company: c.company,
-        location: c.location,
-        linkedinUrl: c.linkedinUrl,
-        matching: c.aiMatching ?? c.matchedMust
-      }));
+      const aiOn = ai_score !== false;
+      const candidates = scored.slice(0, size).map((c) => {
+        const common = {
+          fullName: c.fullName,
+          title: c.title,
+          company: c.company,
+          location: c.location,
+          linkedinUrl: c.linkedinUrl,
+          matching: c.aiMatching ?? c.matchedMust
+        };
+        return aiOn ? {
+          score: c.aiScore ?? 0,
+          // decision score = AI compatibility (what the platform sorts on)
+          compatibilityScore: c.aiScore,
+          resilienceScore: c.resilienceScore,
+          digitalReputationScore: c.digitalReputationScore,
+          ...common
+        } : { score: c.jdScore, jdScore: c.jdScore, ...common };
+      });
       return ok({
         jd_id,
         job_title: jd.job_title,
