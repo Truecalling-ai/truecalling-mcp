@@ -236,6 +236,38 @@ function passesLightTitleFilter(person: any, titleKeywords: string): boolean {
   return jdWords.some((w) => personTitle.includes(w));
 }
 
+// Extract a clean contacts block from a FullEnrich enrich poll result so the
+// tool returns usable emails/phones instead of the raw nested blob
+// (FullEnrich puts them under data[].contact_info).
+function extractFeContacts(pollResult: any): { status?: string; credits?: number; contacts: any[] } {
+  const r = pollResult?.result ?? pollResult ?? {};
+  const data: any[] = Array.isArray(r.data) ? r.data : Array.isArray(r.datas) ? r.datas : [];
+  const contacts = data.map((d: any) => {
+    const ci = d?.contact_info ?? d?.contact ?? {};
+    const emailObjs = [
+      ...(Array.isArray(ci.work_emails) ? ci.work_emails : []),
+      ...(Array.isArray(ci.personal_emails) ? ci.personal_emails : []),
+      ...(Array.isArray(ci.emails) ? ci.emails : []),
+    ];
+    const phoneObjs = [
+      ...(Array.isArray(ci.phones) ? ci.phones : []),
+      ...(Array.isArray(ci.mobile_phones) ? ci.mobile_phones : []),
+    ];
+    const emails = [...new Set(emailObjs.map((e: any) => e?.email ?? e).filter(Boolean))];
+    const phones = [...new Set(phoneObjs.map((ph: any) => ph?.number ?? ph).filter(Boolean))];
+    return {
+      linkedin: d?.input?.professional_network_url ?? d?.input?.linkedin_url ?? null,
+      full_name: d?.profile?.full_name ?? null,
+      work_email: ci?.most_probable_work_email?.email ?? null,
+      personal_email: ci?.most_probable_personal_email?.email ?? null,
+      phone: ci?.most_probable_phone?.number ?? null,
+      all_emails: emails,
+      all_phones: phones,
+    };
+  });
+  return { status: r.status ?? r.enrichment_status, credits: r.cost?.credits, contacts };
+}
+
 export function registerSearchTools(server: McpServer): void {
   const registerTool = authedRegisterTool(server);
   registerTool(
@@ -292,7 +324,12 @@ export function registerSearchTools(server: McpServer): void {
           },
         },
       );
-      return ok(start);
+      const sr = (start as { result?: { enrichment_id?: string; id?: string } })?.result ?? (start as any);
+      return ok({
+        enrichment_id: sr?.enrichment_id ?? sr?.id ?? null,
+        message: "Poll with fullenrich_poll(enrich_id, force_results=true) — typically 30-120s.",
+        raw: start,
+      });
     },
   );
 
@@ -314,7 +351,8 @@ export function registerSearchTools(server: McpServer): void {
         enrichId: enrich_id,
         forceResults: force_results,
       });
-      return ok(result);
+      // Surface a clean contacts block (emails/phones); keep raw for anything else.
+      return ok({ ...extractFeContacts(result), raw: result });
     },
   );
 
