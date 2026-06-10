@@ -278,22 +278,42 @@ export function registerSearchTools(server: McpServer): void {
         "Calls the `fullenrich-proxy` edge function with action='search'. " +
         "Use filters like current_position_titles, person_locations, person_skills, person_seniority, current_company_names. " +
         "Filter values may be plain strings (auto-wrapped to {value,exact_match,exclude}) or full objects. " +
-        "Returns up to `limit` profiles (max 100 per page).",
+        "Returns a COMPACT list (full_name, title, company, location, linkedin, skills) + total — the raw " +
+        "FullEnrich profiles are huge and blow the token limit. Set raw:true only if you really need the full payload.",
       inputSchema: {
         body: z
           .record(z.unknown())
           .describe(
             "FullEnrich v2 /people/search body. Common keys: limit, offset, current_position_titles, person_locations, person_skills, person_seniority, current_company_names. Filter values can be plain strings.",
           ),
+        raw: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe("Return the full raw FullEnrich payload instead of the compact list (can exceed the token limit)."),
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ body }) => {
-      const result = await invokeEdge("fullenrich-proxy", {
+    async ({ body, raw }) => {
+      const result = (await invokeEdge("fullenrich-proxy", {
         action: "search",
         body: normalizeFeBody(body),
+      })) as any;
+      if (raw) return ok(result);
+      // Default: compact projection — the raw profiles are ~16KB each and overflow the token limit.
+      const people = fePickPeople(result).map((p: any) => {
+        const m = feMapPerson(p);
+        return {
+          full_name: m.fullName,
+          title: m.title,
+          company: m.company,
+          location: m.location,
+          linkedin: m.linkedinUrl,
+          skills: m.skills.slice(0, 15),
+        };
       });
-      return ok(result);
+      const total = result?.result?.metadata?.total ?? result?.metadata?.total ?? null;
+      return ok({ total, count: people.length, people });
     },
   );
 
