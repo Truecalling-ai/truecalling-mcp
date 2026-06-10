@@ -1,58 +1,134 @@
-# truecalling-mcp
+# TrueCalling MCP
 
-MCP (Model Context Protocol) server exposing ~40 TrueCalling operations to AI assistants like Claude Code via stdio.
+**Drive your TrueCalling workspace from Claude — in plain language.**
 
-Pilot your TrueCalling tenant (candidates, JDs, scoring, enrichment, Emily, WhatsApp, psy tests, reports…) directly from Claude Code with natural-language prompts.
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Node](https://img.shields.io/badge/node-%E2%89%A520-brightgreen)](https://nodejs.org)
+[![Model Context Protocol](https://img.shields.io/badge/MCP-stdio-blue)](https://modelcontextprotocol.io)
+[![Tools](https://img.shields.io/badge/tools-51-blue)](#tool-catalog)
 
-## What you get (45 tools)
+TrueCalling MCP is a [Model Context Protocol](https://modelcontextprotocol.io) server that connects AI assistants — **Claude Code, Claude Desktop**, and any MCP-compatible client — to **TrueCalling, your AI recruiting &amp; sourcing platform**. Ask in natural language; Claude searches and scores candidates, sources profiles from LinkedIn, drafts Emily/WhatsApp outreach, runs assessments, and generates reports — all **securely scoped to your own account**.
 
-| Domain | Tools |
-|---|---|
-| Auth | `tc_login`, `tc_logout`, `tc_auth_status` |
-| Candidates | `list_candidates`, `get_candidate`, `create_candidate`, `update_candidate`, `update_candidate_status`, `delete_candidate`, `score_candidate`, `enrich_candidate`, `extract_cv`, `parse_cv_file`, `lookup_linkedin_profile` |
-| Job Descriptions | `list_jds`, `get_jd`, `create_jd`, `update_jd`, `parse_job_text`, `expand_job_title` |
-| Search | `search_jd_candidates`, `fullenrich_search`, `fullenrich_enrich_linkedin`, `fullenrich_poll`, `search_candidates_pdl` |
-| Emily / WhatsApp | `emily_chat`, `emily_analyze`, `emily_score_screening`, `send_whatsapp`, `list_whatsapp_messages`, `list_wa_contacts` |
-| Psy | `create_psy_assignment`, `list_psy_items`, `get_psy_submission`, `psy_score` |
-| Reports | `generate_candidate_pdf`, `generate_cv`, `send_candidate_report` |
-| Enterprises | `get_my_enterprise`, `list_team_members`, `get_enterprise_config` |
-| Batch | `sweep_enrich_candidates`, `recalculate_scores`, `compare_jd_candidate`, `match_internal_jds` |
+> *"Find the top candidates for my Senior Data Engineer role, score them against the job, and draft an outreach email for the best match."* → done, end to end.
 
-All tools authenticate as a real TrueCalling user → **RLS applies**. You only see what your account is allowed to see.
+**Contents** · [Highlights](#highlights) · [Quickstart](#quickstart) · [What you can do](#what-you-can-do) · [Tool catalog](#tool-catalog) · [Security &amp; privacy](#security--privacy) · [Configuration](#configuration) · [Troubleshooting](#troubleshooting) · [Support](#support)
 
-## Prerequisites
+---
 
-- **Node.js 20+**
-- A TrueCalling account (email + password)
-- Claude Code installed locally
+## Highlights
 
-## Installation — one line (recommended)
+- **51 tools** across candidates, jobs, sourcing, scoring, Emily/WhatsApp, assessments, and reports.
+- **Same data as the app.** Everything you do in Claude lands in your live TrueCalling workspace instantly — no separate copy of your data to keep in sync.
+- **Secure by design.** You act as a real TrueCalling user; row-level security applies, so you only ever see what your account is allowed to see.
+- **Zero-friction install.** A one-line installer; no `.env`, no `npm install`, no build step on your machine. Works behind corporate networks.
+- **Auto-updating.** New versions ship the moment you reload — no reinstall.
 
-### macOS / Linux
+---
 
+## Quickstart
+
+### Prerequisites
+
+- **Node.js 20+** — the installer offers to set this up for you if it's missing.
+- **git** — used to install and auto-update the server.
+- A **TrueCalling account** (email + password).
+
+### 1. Install
+
+**macOS / Linux**
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Truecalling-ai/truecalling-mcp/main/install.sh | bash
 ```
 
-### Windows (PowerShell)
-
+**Windows (PowerShell — no admin rights needed)**
 ```powershell
 iwr -useb https://raw.githubusercontent.com/Truecalling-ai/truecalling-mcp/main/install.ps1 | iex
 ```
 
-That's it. The installer:
-- Checks you have Node.js 20+ installed (if not, links you to nodejs.org).
-- Backs up `~/.claude.json` (timestamped) before touching it.
-- Safely merges the `truecalling` entry into `mcpServers` — other entries are preserved.
-- Idempotent: re-run any time, no duplicates.
+The installer checks for Node.js, clones the server, and safely adds a `truecalling` entry to your Claude config — backing it up first and preserving any other servers. It's idempotent: re-run it any time.
 
-After it finishes, **reload Claude Code** (`Cmd/Ctrl+Shift+P` → "Developer: Reload Window") and you're done. Tools appear as `mcp__truecalling__<name>`.
+### 2. Reload Claude
 
-**No `.env` editing needed.** Supabase URL + anon key ship as defaults. Credentials are collected interactively by Claude on first use — see "First use — sign in" below.
+`Cmd/Ctrl + Shift + P` → **Developer: Reload Window**. The tools appear as `mcp__truecalling__<name>`.
 
-### What gets added to `~/.claude.json`
+### 3. Sign in
 
-The installer clones the server to `~/.truecalling-mcp` (Windows: `%LOCALAPPDATA%\truecalling-mcp\repo`) and points Claude Code at the launcher `run.mjs`, using an absolute path to `node` (VS Code spawns MCP children with a minimal `PATH`):
+The first time you ask Claude to do something, it will ask for your TrueCalling email and password and call `tc_login`. Your session is cached locally and auto-refreshed — you won't need to sign in again. **Your password is used only to sign in; it is never written to disk or logged.**
+
+```
+You:    Log me in to TrueCalling.
+Claude: Sure — what's your email and password?
+        ✓ Signed in as me@company.com (Acme Recruiting)
+```
+
+No `.env` to edit — the connection settings ship with the server.
+
+---
+
+## What you can do
+
+| Ask Claude… | It uses |
+|---|---|
+| *"List my open job descriptions"* | `list_jds` |
+| *"Find the top candidates for my Responsable RH role in Monaco"* | `search_jd_candidates` |
+| *"Add this LinkedIn profile to the pipeline for that role"* | `create_candidate` |
+| *"Score this candidate against the job and explain why"* | `score_candidate` + `generate_score_explanation` |
+| *"Find an email &amp; phone for this candidate"* | `enrich_candidate` |
+| *"Draft a cold outreach email for them"* | `generate_writer` |
+| *"Generate interview questions for this role"* | `generate_interview_questions` |
+| *"Send them a WhatsApp follow-up"* | `send_whatsapp` |
+| *"Generate a candidate PDF report"* | `generate_candidate_pdf` |
+
+---
+
+## Tool catalog
+
+51 tools, grouped by domain. All authenticate as you; **RLS applies to every call.**
+
+| Domain | Tools |
+|---|---|
+| **Auth** | `tc_login`, `tc_logout`, `tc_auth_status` |
+| **Candidates** | `list_candidates`, `get_candidate`, `create_candidate`, `update_candidate`, `update_candidate_status`, `delete_candidate`, `score_candidate`, `enrich_candidate`, `extract_cv`, `parse_cv_file`, `lookup_linkedin_profile` |
+| **Jobs** | `list_jds`, `get_jd`, `create_jd`, `update_jd`, `parse_job_text`, `expand_job_title` |
+| **Sourcing &amp; search** | `search_jd_candidates`, `fullenrich_search`, `fullenrich_enrich_linkedin`, `fullenrich_poll`, `search_candidates_pdl`, `find_recruiter` |
+| **Emily / WhatsApp** | `emily_chat`, `emily_analyze`, `emily_score_screening`, `send_whatsapp`, `list_whatsapp_messages`, `list_wa_contacts`, `generate_writer` *(outreach copy)* |
+| **Analysis &amp; generation** | `generate_interview_questions`, `analyze_cv_standalone`, `generate_score_explanation`, `interpret_psychometric` |
+| **Assessments** | `create_psy_assignment`, `list_psy_items`, `get_psy_submission`, `psy_score` |
+| **Reports** | `generate_candidate_pdf`, `generate_cv`, `send_candidate_report` |
+| **Enterprise** | `get_my_enterprise`, `list_team_members`, `get_enterprise_config` |
+| **Batch** | `sweep_enrich_candidates`, `recalculate_scores`, `compare_jd_candidate`, `match_internal_jds` |
+
+---
+
+## Security &amp; privacy
+
+Security is a first-class concern — the server is designed so an AI assistant can act on your data without overreach.
+
+- **You are the boundary.** Every call carries your user token; TrueCalling's row-level security decides what you can read or write. The server ships only the **public** API key — there is no privileged/service key in it.
+- **Tenant isolation.** You cannot see or touch another company's candidates, jobs, or assessments.
+- **Read-only mode.** Set `TC_MCP_READONLY=true` to disable every create / update / delete / send / enrich tool at once (read and analysis tools stay available).
+- **Destructive-action hints.** `send_whatsapp`, `delete_candidate`, and `send_candidate_report` are marked with a destructive hint so MCP clients can prompt for confirmation. (`delete_candidate` is a reversible **soft-delete**, not a permanent removal.) For a hard guarantee that nothing mutates, use read-only mode.
+- **Minimal data exposure.** Search and contact tools return compact results by default; bulky personal data (full enrichment blobs) is opt-in, to keep sensitive PII out of chat transcripts.
+- **Safe updates.** Partial-update tools never blindly overwrite a record — protected fields (identity, tenant, server-computed scores) are stripped from free-form input.
+- **Credentials.** Your password is only sent at sign-in and is **never** written to disk. Only short-lived access + rotating refresh tokens are cached, in a `0600` file inside a `0700` directory (POSIX).
+
+> **Good to know:** cached tokens are short-lived but not additionally encrypted at rest, so treat the session file like any other local credential — and run `tc_logout` on shared machines (anything that backs up your home directory copies it too).
+
+**Session file location**
+
+| Platform | Path |
+|---|---|
+| macOS | `~/Library/Application Support/truecalling-mcp/session.json` |
+| Linux | `$XDG_STATE_HOME/truecalling-mcp/session.json` (or `~/.local/state/…`) |
+| Windows | `%LOCALAPPDATA%\truecalling-mcp\session.json` |
+
+---
+
+## Configuration
+
+### How the install is wired
+
+The installer clones the server to `~/.truecalling-mcp` (Windows: `%LOCALAPPDATA%\truecalling-mcp\repo`) and points Claude at the launcher `run.mjs` via an absolute Node path:
 
 ```json
 {
@@ -67,177 +143,107 @@ The installer clones the server to `~/.truecalling-mcp` (Windows: `%LOCALAPPDATA
 }
 ```
 
-On every launch `run.mjs` does two things: `git pull --ff-only` its own clone (so you **auto-update on reload**), then run the committed **self-contained bundle** `dist/index.js`. That bundle inlines every dependency, so there is **no `npm install` on your machine** — which kills both the old npx cache staleness *and* the corporate-TLS-proxy failures that broke `npm`/esbuild downloads. First launch is instant (the clone already contains the prebuilt bundle).
+On each launch, `run.mjs` fast-forwards its clone (`git pull`) and runs a committed, **self-contained** bundle — every dependency is inlined, so there is **no `npm install`** on your machine. This is what makes it work behind corporate TLS proxies and removes the stale-cache problems of `npx`.
 
-To pin the current version (skip the auto-pull), add `"TC_MCP_NO_UPDATE": "1"` to the entry's `env`.
+To pin the current version (skip auto-update), add `"TC_MCP_NO_UPDATE": "1"` to the entry's `env`.
 
 ### Claude Desktop
 
-The installer wires **Claude Code** (`~/.claude.json`). For **Claude Desktop**, add the same `truecalling` entry to its own config file, then restart the app:
+The installer wires **Claude Code**. For **Claude Desktop**, copy the same `truecalling` entry into its config and restart the app:
 
-| OS | Claude Desktop config file |
+| OS | Config file |
 |---|---|
 | macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
 | Windows | `%APPDATA%\Claude\claude_desktop_config.json` |
 
-```json
-{
-  "mcpServers": {
-    "truecalling": {
-      "command": "/abs/path/to/node",
-      "args": ["/Users/you/.truecalling-mcp/run.mjs"],
-      "env": { "PATH": "/abs/path/to/node/dir:/usr/local/bin:/usr/bin:/bin" }
-    }
-  }
-}
-```
+> Tip: run the installer once, then copy the ready-made `truecalling` block (with absolute paths already filled in) from `~/.claude.json` into the Desktop config.
 
-On Windows the path is `%LOCALAPPDATA%\truecalling-mcp\repo\run.mjs` and `command` is the absolute `node.exe`. Tip: run the installer once (it computes and writes those absolute paths into `~/.claude.json`), then copy the `truecalling` block from there into the Desktop config.
-
-## Alternative — local clone (for development)
-
-If you want to hack on the server itself:
-
-```bash
-git clone https://github.com/Truecalling-ai/truecalling-mcp.git
-cd truecalling-mcp
-npm install   # auto-runs prepare → builds dist/
-```
-
-Then point `~/.claude.json` at your local checkout:
-
-```json
-{
-  "mcpServers": {
-    "truecalling-local": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["/ABSOLUTE/PATH/TO/truecalling-mcp/dist/index.js"]
-    }
-  }
-}
-```
+---
 
 ## Troubleshooting
 
-### `UNABLE_TO_VERIFY_LEAF_SIGNATURE` / server shows "Failed to connect" behind a corporate network
+<details>
+<summary><b>Behind a corporate network — "Failed to connect" / <code>UNABLE_TO_VERIFY_LEAF_SIGNATURE</code></b></summary>
 
-If the server registers but shows **Failed to connect** with no output, your network has a **TLS-inspecting proxy / antivirus** presenting a corporate root CA that Node doesn't trust via its bundled CA list. The server's HTTPS calls to Supabase then fail.
+A TLS-inspecting proxy or antivirus is presenting a corporate root CA that Node doesn't trust. Two things may need it:
 
-> Note: the self-contained bundle means there's **no `npm install`** anymore, so the old esbuild/tsup download failure is gone. What remains is (a) the **runtime** HTTPS to Supabase and (b) the **`git clone`/`pull`** through the proxy.
-
-**(a) Runtime — Node ≥ 20.12 / 22 / 24:** tell Node to trust the OS certificate store with `--use-system-ca`. Add it to the `truecalling` entry's `env` in `~/.claude.json`:
-
+**Runtime** (Node ≥ 20.12) — trust the OS certificate store. Add to the `truecalling` entry's `env`:
 ```jsonc
 "env": { "NODE_OPTIONS": "--use-system-ca", "PATH": "…" }
 ```
 
-**(b) git through the proxy:** point git at the corporate CA bundle so clone/pull succeed:
-
+**git through the proxy** — point git at the corporate CA bundle:
 ```bash
 git config --global http.sslCAInfo /path/to/corporate-root-ca.pem
-# Last resort, scoped to THIS repo only (never use --global, which disables
-# TLS verification for ALL your git operations):
+# Last resort, scoped to THIS repo only (never --global):
 #   git -C ~/.truecalling-mcp config http.sslVerify false
 ```
+Then re-run the installer and reload Claude.
+</details>
 
-Then re-run the installer (it'll clone with your git settings) and reload Claude Code.
+<details>
+<summary><b>Still on an old version after an update</b></summary>
 
-### Stale version after an update
-
-The launcher auto-updates on each reload (`git pull` in `~/.truecalling-mcp`). If you're still on an old build, the pull is failing silently — run it by hand to see why (network/proxy, or local edits blocking a fast-forward):
-
+The launcher auto-updates on each reload. If it's stuck, the `git pull` is failing silently — run it by hand to see why:
 ```bash
 git -C ~/.truecalling-mcp pull --ff-only                         # macOS / Linux
-git -C "$env:LOCALAPPDATA\truecalling-mcp\repo" pull --ff-only   # Windows (PowerShell)
+git -C "$env:LOCALAPPDATA\truecalling-mcp\repo" pull --ff-only   # Windows
 ```
+Then reload Claude. (If your config still points at `npx`, re-run the installer to switch to the auto-updating launcher.)
+</details>
 
-Then reload Claude Code. (Older installs used `npx github:…`, which cached the commit — if your `~/.claude.json` entry still points at `npx`, re-run the installer to switch to the auto-updating launcher.)
+<details>
+<summary><b>Switching accounts</b></summary>
 
-## First use — sign in
+Ask Claude to run `tc_logout` (deletes the cached session), then sign in as the other user. Check who you are with `tc_auth_status`.
+</details>
 
-The very first time you ask Claude to do anything with TrueCalling, the tool will return a `Not signed in` error. Claude will then ask you for your email and password in chat, and call `tc_login` with them. Your session is cached on disk and auto-refreshed thereafter — you should not need to sign in again unless you `tc_logout` or your refresh token is revoked server-side.
+---
 
-You can also trigger this manually:
-> *"Log me in to TrueCalling — my email is foo@bar.com and my password is hunter2"*
+## Support
 
-After that, just ask:
-- *"List my 5 most recent candidates"* → calls `list_candidates`
-- *"Score candidate `<uuid>`"* → calls `score_candidate`
-- *"Show open JDs"* → calls `list_jds({is_active: true})`
+Questions, bugs, or feature requests:
 
-## Session storage
+- **Issues:** [github.com/Truecalling-ai/truecalling-mcp/issues](https://github.com/Truecalling-ai/truecalling-mcp/issues)
+- **Email:** support@truecalling.ai
 
-| Platform | Path |
-|---|---|
-| macOS | `~/Library/Application Support/truecalling-mcp/session.json` |
-| Linux | `$XDG_STATE_HOME/truecalling-mcp/session.json` (fallback `~/.local/state/truecalling-mcp/session.json`) |
-| Windows | `%LOCALAPPDATA%\truecalling-mcp\session.json` |
+---
 
-The file is written atomically with mode `0600` in a `0700` directory (POSIX). Only the access + refresh tokens are stored — never the password.
-
-To switch accounts: ask Claude to call `tc_logout`, which deletes the session file. Then sign in as a different user via `tc_login`.
-
-To check who you're signed in as: ask Claude for *"my TrueCalling auth status"* → calls `tc_auth_status`.
-
-## Security notes
-
-- Your password is sent through the Claude chat transcript on first sign-in (and any subsequent re-login). Only the rotating refresh token + short-lived access token are persisted to disk.
-- The session file is mode `0600` (POSIX) — readable only by your user. Tokens are stored as **plaintext JSON**, not encrypted. Anything that backs up your home directory (Time Machine, iCloud Drive, `tar` of `~`) will copy them too.
-- Refresh token auto-rotates on every renewal; the rotated token is persisted automatically with `fdatasync` before publishing the rename.
-- After 5 failed `tc_login` attempts in a row, the tool refuses further attempts for 60 seconds.
-
-### Running Claude Code + MCP Inspector at the same time
-
-Both processes share the same `session.json`. Supabase refresh tokens are **single-use**: when one process auto-refreshes, the old token in the other's memory is invalidated server-side. If both are open simultaneously, you'll occasionally see one of them prompt for re-login. Workarounds: close one before using the other, or point Inspector at a different `XDG_STATE_HOME` to give it its own session file.
-
-## Local testing (without Claude Code)
+## For developers
 
 ```bash
-# Interactive UI
-npm run inspect
-# → opens http://localhost:5173 (MCP Inspector)
-# In the inspector, call `tc_login` first to sign in.
+git clone https://github.com/Truecalling-ai/truecalling-mcp.git
+cd truecalling-mcp
+npm install        # developers only — builds dist/ via the prepare hook
+
+npm run build      # bundle src → dist/index.js (deps inlined)
+npm test           # smoke (server boots + tool schemas) + security tests
+npm run typecheck  # tsc --noEmit
+npm run dev        # run the server from TypeScript (tsx)
+npm run mcp:inspect # open the MCP Inspector UI
 ```
 
-## Safety
-
-- `TC_MCP_READONLY=true` disables every write/destructive tool.
-- Destructive tools (`send_whatsapp`, `delete_candidate`, `send_candidate_report`) have `destructiveHint: true` → Claude Code asks confirmation.
-- The MCP hits the **same Supabase + edge functions** as the React TrueCalling app. Every write is immediately visible in the UI. There is no shadow store.
-
-## Architecture
+**Layout**
 
 ```
 src/
-├── index.ts            # MCP server entry (stdio)
-├── config.ts           # Supabase URL/anon key (defaults baked in)
-├── supabase.ts         # client, session persistence, ensureAuth/signIn/signOut
-├── session-path.ts     # cross-platform session.json path
-├── session-file.ts     # atomic read/write of session.json (mode 0600)
-├── edge.ts             # invokeEdge(name, body) helper
-├── util.ts             # ok/err/guardWrite + authedRegisterTool (auto withAuth wrapper)
-└── tools/
-    ├── auth.ts         #  3  (tc_login, tc_logout, tc_auth_status)
-    ├── candidates.ts   # 10
-    ├── jobs.ts         #  6
-    ├── search.ts       #  4
-    ├── emily.ts        #  6
-    ├── psy.ts          #  4
-    ├── reports.ts      #  3
-    ├── enterprises.ts  #  3
-    └── batch.ts        #  4
+├── index.ts        # MCP server entry (stdio)
+├── config.ts       # API URL + public key
+├── supabase.ts     # client, session persistence, auth
+├── session-*.ts    # cross-platform 0600 session storage
+├── edge.ts         # invokeEdge() — call a backend function (+ retry)
+├── util.ts         # ok/err, guardWrite, sanitizeWritable, auth wrapper
+└── tools/          # 51 tools by domain: auth, candidates, jobs, search,
+                    #   emily, psy, reports, enterprises, batch, analysis
+run.mjs             # launcher: git pull → run the bundle
+tsup.config.ts      # self-contained bundle config
+test/               # node --test smoke + security tests
 ```
 
-Each tool is registered via `authedRegisterTool(server)(name, { description, inputSchema, annotations }, handler)`, which transparently wraps the handler with `ensureAuth()` + a `NotSignedInError`-to-user-message converter. Edge functions are invoked exactly the same way as the React app's `services/fullenrichService.ts` does: `POST /functions/v1/<name>` with `Authorization: Bearer <user_jwt>`.
+Every tool is registered through `authedRegisterTool`, which wraps the handler with an auth check and a friendly "not signed in" message. To add a tool, drop a `registerTool(...)` into the right domain file, then `npm run build`. The shipped `dist/index.js` is committed — **rebuild and commit it with your source change**, or clients won't get the update.
 
-## Adding a tool
-
-1. Pick the right file under `src/tools/`.
-2. Add a `registerTool(...)` call following the existing pattern (uses the `authedRegisterTool` wrapper at top of the function).
-3. `npm run build`.
-4. Restart Claude Code.
+---
 
 ## License
 
-MIT
+[MIT](LICENSE) © TrueCalling
