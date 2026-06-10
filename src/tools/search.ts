@@ -273,13 +273,16 @@ export function registerSearchTools(server: McpServer): void {
   registerTool(
     "fullenrich_search",
     {
-      title: "Search profiles via FullEnrich",
+      title: "RAW FullEnrich profile search (exploration only — NOT JD-scored)",
       description:
-        "Calls the `fullenrich-proxy` edge function with action='search'. " +
-        "Use filters like current_position_titles, person_locations, person_skills, person_seniority, current_company_names. " +
-        "Filter values may be plain strings (auto-wrapped to {value,exact_match,exclude}) or full objects. " +
-        "Returns a COMPACT list (full_name, title, company, location, linkedin, skills) + total — the raw " +
-        "FullEnrich profiles are huge and blow the token limit. Set raw:true only if you really need the full payload.",
+        "⚠️ DO NOT use this to find candidates for a JD. This is a RAW FullEnrich search: results come back in " +
+        "FullEnrich relevance order (title + location), with NO experience filter and NO AI compatibility scoring, " +
+        "so it will NOT match the Truecalling app's candidate list. For ANY 'find/source candidates for this JD' " +
+        "request, use `search_jd_candidates(jd_id)` instead — it replicates the app exactly (experience window + AI " +
+        "scoring + ranking). Use this tool ONLY for ad-hoc exploration by raw filters when there is no JD.\n\n" +
+        "Calls `fullenrich-proxy` action='search'. Filters: current_position_titles, person_locations, person_skills, " +
+        "person_seniority, current_company_names (plain strings auto-wrapped). Returns a COMPACT list " +
+        "(full_name, title, company, location, linkedin, skills) + total; raw:true for the full payload (huge).",
       inputSchema: {
         body: z
           .record(z.unknown())
@@ -425,13 +428,16 @@ export function registerSearchTools(server: McpServer): void {
   registerTool(
     "search_jd_candidates",
     {
-      title: "Source candidates for a JD (FullEnrich — aligned with the platform)",
+      title: "Find candidates for a JD — matches the Truecalling app (USE THIS)",
       description:
-        "Replicates the app's searchAndAdaptByJDMax for a job description: LLM-expands the title (expand-job-title), " +
-        "searches FullEnrich across up to `max_pages` pages (100/page) filtered by person_locations (JD location, " +
-        "overridable) and person_skills (requirements/qualifications), applies the light title filter, dedupes, " +
-        "scores every profile against the JD skills, and returns the top `size`. FullEnrich search is free (credits " +
-        "only on enrichment); deep runs are slower, so lower max_pages if your client times out.",
+        "✅ THE tool to source/find candidates for a job description. ALWAYS use this (not fullenrich_search or " +
+        "search_candidates_pdl) whenever the user asks to find/source/search candidates for a JD — it reproduces the " +
+        "Truecalling app's pipeline end-to-end so the list MATCHES the app: extract-search-params (title + location + " +
+        "must skills capped at 3) → expand-job-title → FullEnrich search → infer the experience window from the JD " +
+        "title (inferYearsFromJD, e.g. 'Manager' ⇒ 7-15 yrs) → score EVERY profile with the app's AI scorer " +
+        "(score-candidate) → rank by AI compatibility. Pass just the jd_id. To match the app's full list, raise " +
+        "ai_score_top toward `analyzed` (scores the whole pool; more OpenAI cost, slower). FullEnrich search itself " +
+        "is free; only the AI scoring costs. Params are cached per JD for reproducible runs (refresh:true to recompute).",
       inputSchema: {
         jd_id: z.string().uuid(),
         location: z
