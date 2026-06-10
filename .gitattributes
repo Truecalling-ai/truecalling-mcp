@@ -1,0 +1,6 @@
+# Normalize all text to LF on checkout, on every OS. Without this, Windows
+# (core.autocrlf=true) rewrites files to CRLF after checkout, which git then
+# sees as local modifications — blocking the auto-update `git pull`/sync and
+# leaving clients stuck on an old version. The launcher also `reset --hard`s as
+# a belt-and-braces safeguard.
+* text=auto eol=lf

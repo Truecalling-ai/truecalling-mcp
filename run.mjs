@@ -17,16 +17,25 @@ import { dirname, join } from "node:path";
 const dir = dirname(fileURLToPath(import.meta.url));
 
 if (process.env.TC_MCP_NO_UPDATE !== "1") {
+  // Disable hooks + fsmonitor so a hook planted in the local clone's .git can't
+  // run arbitrary code as the user on every launch.
+  const git = (args) =>
+    spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", dir, ...args], {
+      stdio: "ignore",
+      timeout: 12000,
+    });
   try {
-    // Disable hooks + fsmonitor during the auto-update pull so a hook planted in
-    // the local clone's .git can't run arbitrary code as the user on every launch.
-    spawnSync(
-      "git",
-      ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", dir, "pull", "--ff-only", "--quiet"],
-      { stdio: "ignore", timeout: 12000 },
-    );
+    // Force-sync to origin/main with reset --hard (NOT pull --ff-only): a client
+    // clone that drifted — a locally-rebuilt dist/index.js, or CRLF line-ending
+    // churn on Windows — would make pull fail the merge and leave the client
+    // stuck on an old version forever. Clients never edit the repo, so a hard
+    // reset to the fetched tip is the safe, self-healing update. Offline → fetch
+    // fails → we keep the bundle already on disk.
+    if (git(["fetch", "--quiet", "origin", "main"]).status === 0) {
+      git(["reset", "--hard", "--quiet", "origin/main"]);
+    }
   } catch {
-    // offline / git missing / not a clone — fall through to the bundle on disk
+    // git missing / not a clone — fall through to the bundle on disk
   }
 }
 

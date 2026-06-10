@@ -216,7 +216,15 @@ $RepoUrl    = 'https://github.com/Truecalling-ai/truecalling-mcp.git'
 
 if (Test-Path (Join-Path $InstallDir '.git')) {
     Write-Bold "-> Updating existing TrueCalling MCP clone at $InstallDir..."
-    & git -C $InstallDir pull --ff-only --quiet 2>&1 | Out-Host
+    # Force-sync to origin/main (reset --hard, not pull --ff-only) so a clone
+    # that drifted - rebuilt dist or CRLF line-ending churn on Windows - still
+    # updates instead of failing the merge.
+    & git -C $InstallDir fetch --quiet origin main 2>&1 | Out-Host
+    if ($LASTEXITCODE -eq 0) {
+        & git -C $InstallDir reset --hard --quiet origin/main 2>&1 | Out-Host
+    } else {
+        Write-Warn "  (fetch failed - keeping the existing clone)"
+    }
 } else {
     Write-Bold "-> Cloning the TrueCalling MCP server to $InstallDir..."
     if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }

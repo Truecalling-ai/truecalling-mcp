@@ -172,7 +172,13 @@ REPO_URL="https://github.com/Truecalling-ai/truecalling-mcp.git"
 
 if [ -d "${INSTALL_DIR}/.git" ]; then
   bold "→ Updating existing TrueCalling MCP clone at ${INSTALL_DIR}…"
-  git -C "$INSTALL_DIR" pull --ff-only --quiet >&2 || yellow "  (pull failed — keeping the existing clone)"
+  # Force-sync to origin/main (reset --hard, not pull --ff-only) so a clone that
+  # drifted — rebuilt dist or CRLF churn — still updates instead of failing.
+  if git -C "$INSTALL_DIR" fetch --quiet origin main >&2; then
+    git -C "$INSTALL_DIR" reset --hard --quiet origin/main >&2 || yellow "  (could not fast-sync — keeping the existing clone)"
+  else
+    yellow "  (fetch failed — keeping the existing clone)"
+  fi
 else
   bold "→ Cloning the TrueCalling MCP server to ${INSTALL_DIR}…"
   rm -rf "$INSTALL_DIR"
