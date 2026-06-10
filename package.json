@@ -17,7 +17,11 @@
     "prepare": "npm run build",
     "dev": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "start": "node --env-file-if-exists=.env dist/index.js",
-    "inspect": "npm run build && npx @modelcontextprotocol/inspector node --env-file-if-exists=.env dist/index.js"
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "npm run build && node --import tsx --test test/*.test.ts",
+    "inspect": "npm run build && npx @modelcontextprotocol/inspector node --env-file-if-exists=.env dist/index.js",
+    "mcp:inspect": "npm run inspect"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
