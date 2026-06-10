@@ -4,14 +4,14 @@ MCP (Model Context Protocol) server exposing ~40 TrueCalling operations to AI as
 
 Pilot your TrueCalling tenant (candidates, JDs, scoring, enrichment, Emily, WhatsApp, psy tests, reports…) directly from Claude Code with natural-language prompts.
 
-## What you get (44 tools)
+## What you get (45 tools)
 
 | Domain | Tools |
 |---|---|
 | Auth | `tc_login`, `tc_logout`, `tc_auth_status` |
 | Candidates | `list_candidates`, `get_candidate`, `create_candidate`, `update_candidate`, `update_candidate_status`, `delete_candidate`, `score_candidate`, `enrich_candidate`, `extract_cv`, `parse_cv_file`, `lookup_linkedin_profile` |
 | Job Descriptions | `list_jds`, `get_jd`, `create_jd`, `update_jd`, `parse_job_text`, `expand_job_title` |
-| Search | `fullenrich_search`, `fullenrich_enrich_linkedin`, `fullenrich_poll`, `search_candidates_pdl` |
+| Search | `search_jd_candidates`, `fullenrich_search`, `fullenrich_enrich_linkedin`, `fullenrich_poll`, `search_candidates_pdl` |
 | Emily / WhatsApp | `emily_chat`, `emily_analyze`, `emily_score_screening`, `send_whatsapp`, `list_whatsapp_messages`, `list_wa_contacts` |
 | Psy | `create_psy_assignment`, `list_psy_items`, `get_psy_submission`, `psy_score` |
 | Reports | `generate_candidate_pdf`, `generate_cv`, `send_candidate_report` |
@@ -113,7 +113,9 @@ If the server registers but shows **Failed to connect** with no output, your net
 
 ```bash
 git config --global http.sslCAInfo /path/to/corporate-root-ca.pem
-# (last resort, less safe) git config --global http.sslVerify false
+# Last resort, scoped to THIS repo only (never use --global, which disables
+# TLS verification for ALL your git operations):
+#   git -C ~/.truecalling-mcp config http.sslVerify false
 ```
 
 Then re-run the installer (it'll clone with your git settings) and reload Claude Code.
