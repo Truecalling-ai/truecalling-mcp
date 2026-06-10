@@ -43882,17 +43882,34 @@ function registerReportsTools(server) {
     "send_candidate_report",
     {
       title: "Send a candidate report by email",
-      description: "Calls `send-candidate-report` edge function. \u26A0\uFE0F Sends a REAL email via SendGrid to recipient_email.",
+      description: "Calls `send-candidate-report` edge function. \u26A0\uFE0F Sends a REAL email via SendGrid. The edge needs the report's `pdfUrl` \u2014 generate it first with generate_candidate_pdf and pass its URL as pdf_url (or pass submission_id to resolve the PDF + email + name from a psychometric submission). candidate_id is used only to fill the candidate's name in the email.",
       inputSchema: {
-        candidate_id: external_exports.string().uuid(),
-        recipient_email: external_exports.string().email()
+        recipient_email: external_exports.string().email(),
+        pdf_url: external_exports.string().optional().describe("Report PDF URL from generate_candidate_pdf. Required unless submission_id is given."),
+        submission_id: external_exports.string().optional().describe("Resolve pdf_url + recipient + name from a submission instead of passing pdf_url."),
+        candidate_id: external_exports.string().uuid().optional().describe("Used only to fill the candidate name in the email."),
+        candidate_name: external_exports.string().optional(),
+        language: external_exports.string().optional().describe("Email template language (en, fr, \u2026).")
       },
       annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true }
     },
-    async ({ candidate_id, recipient_email }) => {
+    async ({ recipient_email, pdf_url, submission_id, candidate_id, candidate_name, language }) => {
       const block = guardWrite("send_candidate_report");
       if (block) return block;
-      const result = await invokeEdge("send-candidate-report", { candidateId: candidate_id, recipientEmail: recipient_email });
+      if (!pdf_url && !submission_id)
+        return err("Provide pdf_url (from generate_candidate_pdf) or submission_id \u2014 the report PDF is required.");
+      let name = candidate_name;
+      if (!name && candidate_id) {
+        const { data: cand } = await supabase.from("candidates").select("candidate_name").eq("id", candidate_id).maybeSingle();
+        name = cand?.candidate_name ?? void 0;
+      }
+      const result = await invokeEdge("send-candidate-report", {
+        pdfUrl: pdf_url,
+        recipientEmail: recipient_email,
+        candidateName: name,
+        language,
+        submissionId: submission_id
+      });
       return ok(result);
     }
   );
