@@ -42470,6 +42470,7 @@ async function invokeEdge(name, body) {
 
 // src/tools/candidates.ts
 var CANDIDATE_COLUMNS = "id,candidate_name,email,telephone,linkedin,linkedin_url,location,country,job_title,status,compatibility_score,jd_match_score,matching_skills,missing_skills,job_description_id,enterprise_id,needs_enrichment,profile_pic,created_at,updated_at";
+var LIST_COLUMNS = "id,candidate_name,email,telephone,linkedin_url,location,country,job_title,status,fu_status,source,compatibility_score,job_description_id,enterprise_id,needs_enrichment,created_at";
 function normalizeLinkedIn(input) {
   let s = (input || "").trim().replace(/^@/, "").split("?")[0].replace(/\/+$/, "");
   if (!s) return "";
@@ -42579,20 +42580,22 @@ function registerCandidatesTools(server) {
     "list_candidates",
     {
       title: "List candidates",
-      description: "List TrueCalling candidates filtered by job_description_id, status, search query, or with pagination. Returns id, candidate_name, email, status, compatibility_score, JD link, etc. Respects RLS \u2014 only candidates the authenticated user can see are returned.",
+      description: "List TrueCalling candidates filtered by job_description_id, pipeline status, follow-up status (fu_status), search query, or with pagination. Returns a COMPACT row (no skill arrays \u2014 use get_candidate for full detail). `status` is the Kanban stage (sourced/Accepted/\u2026); `fu_status` is the follow-up column \u2014 pass fu_status:'to_contact' for the \xAB \xC0 contacter \xBB list (others: waiting, scheduled, done). Respects RLS \u2014 only candidates the authenticated user can see are returned.",
       inputSchema: {
         job_description_id: external_exports.string().uuid().optional().describe("Filter by JD UUID"),
-        status: external_exports.string().optional().describe("Pipeline status (e.g. 'new', 'screening', 'interview', 'hired')"),
+        status: external_exports.string().optional().describe("Kanban/pipeline status (e.g. 'sourced', 'Accepted', 'pending')"),
+        fu_status: external_exports.string().optional().describe("Follow-up status: 'to_contact' (\xC0 contacter), 'waiting', 'scheduled', 'done'"),
         search: external_exports.string().optional().describe("Substring match on candidate_name OR job_title (ilike %search%)"),
         limit: external_exports.number().int().min(1).max(200).default(50),
         offset: external_exports.number().int().min(0).default(0)
       },
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true }
     },
-    async ({ job_description_id, status, search, limit, offset }) => {
-      let q = supabase.from("candidates").select(CANDIDATE_COLUMNS).range(offset, offset + limit - 1);
+    async ({ job_description_id, status, fu_status, search, limit, offset }) => {
+      let q = supabase.from("candidates").select(LIST_COLUMNS).range(offset, offset + limit - 1);
       if (job_description_id) q = q.eq("job_description_id", job_description_id);
       if (status) q = q.eq("status", status);
+      if (fu_status) q = q.eq("fu_status", fu_status);
       if (search) {
         const term = search.replace(/[,()*\\]/g, "").trim();
         q = q.or(`candidate_name.ilike.%${term}%,job_title.ilike.%${term}%`);
