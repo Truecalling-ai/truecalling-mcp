@@ -43494,7 +43494,9 @@ function registerSearchTools(server) {
             matchedMust,
             cv: feToCv(p),
             aiScore: null,
-            aiMatching: null
+            aiMatching: null,
+            resilienceScore: null,
+            digitalReputationScore: null
           });
         }
         if (batch.length < 100) break;
@@ -43533,6 +43535,9 @@ function registerSearchTools(server) {
                 if (typeof sr?.compatibilityScore === "number") {
                   cand.aiScore = sr.compatibilityScore;
                   cand.aiMatching = sr.matchingSkills ?? [];
+                  if (typeof sr.resilienceScore === "number") cand.resilienceScore = sr.resilienceScore;
+                  if (typeof sr.digitalReputationScore === "number")
+                    cand.digitalReputationScore = sr.digitalReputationScore;
                   aiScoredCount++;
                 }
               } catch {
@@ -43546,6 +43551,8 @@ function registerSearchTools(server) {
         score: c.aiScore ?? 0,
         aiScore: c.aiScore,
         jdScore: c.jdScore,
+        resilienceScore: c.resilienceScore,
+        digitalReputationScore: c.digitalReputationScore,
         fullName: c.fullName,
         title: c.title,
         company: c.company,

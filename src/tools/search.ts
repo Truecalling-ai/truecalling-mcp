@@ -654,6 +654,8 @@ export function registerSearchTools(server: McpServer): void {
             cv: feToCv(p),
             aiScore: null as number | null,
             aiMatching: null as string[] | null,
+            resilienceScore: null as number | null,
+            digitalReputationScore: null as number | null,
           });
         }
 
@@ -713,11 +715,23 @@ export function registerSearchTools(server: McpServer): void {
                   jobTitle: jd.job_title,
                   language: "fr",
                   lite: true,
-                })) as { result?: { compatibilityScore?: number; matchingSkills?: string[] } };
+                })) as {
+                  result?: {
+                    compatibilityScore?: number;
+                    matchingSkills?: string[];
+                    resilienceScore?: number;
+                    digitalReputationScore?: number;
+                  };
+                };
                 const sr = res?.result ?? (res as any);
                 if (typeof sr?.compatibilityScore === "number") {
                   cand.aiScore = sr.compatibilityScore;
                   cand.aiMatching = sr.matchingSkills ?? [];
+                  // resilience + digital reputation come free in the same response
+                  // (deterministic, server-side) — the platform shows all three.
+                  if (typeof sr.resilienceScore === "number") cand.resilienceScore = sr.resilienceScore;
+                  if (typeof sr.digitalReputationScore === "number")
+                    cand.digitalReputationScore = sr.digitalReputationScore;
                   aiScoredCount++;
                 }
               } catch {
@@ -737,6 +751,8 @@ export function registerSearchTools(server: McpServer): void {
         score: c.aiScore ?? 0,
         aiScore: c.aiScore,
         jdScore: c.jdScore,
+        resilienceScore: c.resilienceScore,
+        digitalReputationScore: c.digitalReputationScore,
         fullName: c.fullName,
         title: c.title,
         company: c.company,
