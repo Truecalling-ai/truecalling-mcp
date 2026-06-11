@@ -158,6 +158,24 @@ The installer wires **Claude Code**. For **Claude Desktop**, copy the same `true
 
 > Tip: run the installer once, then copy the ready-made `truecalling` block (with absolute paths already filled in) from `~/.claude.json` into the Desktop config.
 
+### Remote clients (Microsoft Copilot Studio, etc.) — Streamable HTTP mode
+
+Stdio is for local clients (Claude Code/Desktop). For remote MCP clients such as **Microsoft Copilot Studio**, run the same server in Streamable HTTP mode:
+
+```bash
+TC_MCP_HTTP_API_KEY="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" \
+npm run start:http   # or: node dist/index.js --http
+```
+
+- Endpoint: `POST /mcp` (stateless Streamable HTTP). `GET /health` is an unauthenticated liveness probe.
+- **`TC_MCP_HTTP_API_KEY` is mandatory** (≥ 16 chars) — the server refuses to start without it. Use a **randomly generated** key (the command above), never a passphrase: this key is the entire perimeter. Clients send it via `x-api-key: <key>` or `Authorization: Bearer <key>`. Failed attempts are throttled per IP (10/min → 429).
+- Port: `TC_MCP_HTTP_PORT` (falls back to `PORT`, then 3000). Request bodies are capped at 4 MB (413 beyond).
+- The Supabase session is process-global and cached on the host's disk, exactly like stdio mode — the HTTP deployment is **single-tenant** (one TrueCalling account per instance). Run it behind HTTPS (any PaaS terminates TLS for you).
+- **Provision the session once at deploy** (call `tc_login` one time), then **don't enable `tc_login`/`tc_logout` in the Copilot Studio tool list**: with many concurrent conversations on one process, a `tc_logout` from one conversation would sign everyone out, and 5 bad logins lock everyone out for 60 s.
+- **Long-running tools**: responses are plain JSON (no streaming), and Power Platform's connector gateway times out around 2 minutes. Prefer the poll-style variants (`fullenrich_enrich_linkedin` + `fullenrich_poll`) over long blocking calls, and keep `enrich_candidate`'s `wait_seconds` well under 120 in Copilot topics.
+
+In **Copilot Studio**: your agent → **Tools → Add a tool → New tool → Model Context Protocol** → server URL `https://<your-host>/mcp`, authentication **API key** with header `x-api-key`.
+
 ---
 
 ## Troubleshooting
