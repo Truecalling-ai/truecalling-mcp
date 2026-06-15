@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { supabase } from "../supabase.js";
+import { db, getCurrentUserId } from "../supabase.js";
 import { ok, err, authedRegisterTool } from "../util.js";
 
 export function registerEnterprisesTools(server: McpServer): void {
@@ -16,14 +16,13 @@ export function registerEnterprisesTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async () => {
-      const { data: userData } = await supabase.auth.getUser();
-      const authUserId = userData.user?.id;
+      const authUserId = await getCurrentUserId();
       if (!authUserId) return err("No authenticated user.");
       // A user can belong to MORE THAN ONE enterprise (one row per membership in
       // enterprises_team), so we must NOT use maybeSingle() here — it errors with
       // "JSON object requested, multiple (or no) rows returned" the moment a user
       // has 2+ enterprises.
-      const { data: members, error: memberErr } = await supabase
+      const { data: members, error: memberErr } = await db()
         .from("enterprises_team")
         .select("id,enterprise_id,role,full_name,email")
         .eq("auth_user_id", authUserId);
@@ -31,7 +30,7 @@ export function registerEnterprisesTools(server: McpServer): void {
       if (!members || members.length === 0)
         return err("Authenticated user is not a member of any enterprise.");
       const ids = [...new Set(members.map((m) => m.enterprise_id))];
-      const { data: enterprises, error: entErr } = await supabase
+      const { data: enterprises, error: entErr } = await db()
         .from("enterprises")
         .select("*")
         .in("id", ids);
@@ -64,7 +63,7 @@ export function registerEnterprisesTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ enterprise_id }) => {
-      const { data, error } = await supabase
+      const { data, error } = await db()
         .from("enterprises_team")
         .select("id,full_name,email,role,auth_user_id")
         .eq("enterprise_id", enterprise_id);
@@ -83,7 +82,7 @@ export function registerEnterprisesTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ enterprise_id }) => {
-      const { data, error } = await supabase
+      const { data, error } = await db()
         .from("enterprises")
         .select(
           "id,enterprise_name,country,logo,whatsapp_from,emily_tone,emily_company_context,adm_company,adm_tc,email_suffix",

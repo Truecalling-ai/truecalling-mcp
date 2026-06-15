@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { supabase } from "../supabase.js";
+import { db } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
 import { ok, err, guardWrite, sanitizeWritable, authedRegisterTool } from "../util.js";
 
@@ -56,7 +56,7 @@ export function registerJobsTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ is_active, search, limit, offset }) => {
-      let q = supabase.from("job_descriptions").select(JD_COLUMNS).range(offset, offset + limit - 1);
+      let q = db().from("job_descriptions").select(JD_COLUMNS).range(offset, offset + limit - 1);
       if (is_active !== undefined) q = q.eq("is_active", is_active);
       if (search) q = q.ilike("job_title", `%${search}%`);
       const { data, error } = await q;
@@ -74,7 +74,7 @@ export function registerJobsTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ id }) => {
-      const { data, error } = await supabase.from("job_descriptions").select("*").eq("id", id).maybeSingle();
+      const { data, error } = await db().from("job_descriptions").select("*").eq("id", id).maybeSingle();
       if (error) return err(error.message);
       if (!data) return err(`JD ${id} not found.`);
       return ok(data);
@@ -132,7 +132,7 @@ export function registerJobsTools(server: McpServer): void {
         }
       }
       bulletizeJdText(p);
-      const { data, error } = await supabase.from("job_descriptions").insert(p).select().maybeSingle();
+      const { data, error } = await db().from("job_descriptions").insert(p).select().maybeSingle();
       if (error) return err(error.message);
       return ok(data ?? { created: true });
     },
@@ -161,7 +161,7 @@ export function registerJobsTools(server: McpServer): void {
       // enterprise or tamper with server-owned columns.
       const patchN = sanitizeWritable(patch, "update") as Record<string, unknown>;
       bulletizeJdText(patchN);
-      const { data, error } = await supabase.from("job_descriptions").update(patchN).eq("id", id).select().maybeSingle();
+      const { data, error } = await db().from("job_descriptions").update(patchN).eq("id", id).select().maybeSingle();
       if (error) return err(error.message);
       return ok(data ?? { id, updated: true });
     },

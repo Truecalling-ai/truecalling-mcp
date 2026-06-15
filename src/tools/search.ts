@@ -2,7 +2,8 @@ import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { supabase, SESSION_FILE } from "../supabase.js";
+import { db, SESSION_FILE } from "../supabase.js";
+import { activeUser } from "../tenants.js";
 import { invokeEdge } from "../edge.js";
 import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
 
@@ -504,7 +505,7 @@ export function registerSearchTools(server: McpServer): void {
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ jd_id, location, size, max_pages, expand_title, ai_score, ai_score_top, refresh }) => {
-      const { data: jd, error: jdErr } = await supabase
+      const { data: jd, error: jdErr } = await db()
         .from("job_descriptions")
         .select(
           "id,job_title,location,job_summary,job_description,key_responsibilities,expectation,requirements,qualifications,soft_skills",
@@ -530,7 +531,10 @@ export function registerSearchTools(server: McpServer): void {
         .filter(Boolean)
         .join("\n\n");
 
-      const cacheKey = `${jd_id}|loc=${(location ?? "").trim().toLowerCase()}|exp=${expand_title !== false}`;
+      // Namespace the cache per caller in multi-tenant HTTP mode — the cache
+      // file is process-wide, and derived search params must not cross users.
+      const cacheNs = activeUser()?.userId ?? "local";
+      const cacheKey = `${cacheNs}|${jd_id}|loc=${(location ?? "").trim().toLowerCase()}|exp=${expand_title !== false}`;
       const paramsCache = readParamsCache();
       let titleKeyword: string;
       let city: string;

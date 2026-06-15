@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { supabase } from "../supabase.js";
+import { db } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
 import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
 
@@ -71,7 +71,7 @@ export function registerReportsTools(server: McpServer): void {
         return err("Provide pdf_url (from generate_candidate_pdf) or submission_id — the report PDF is required.");
       let name = candidate_name;
       if (!name && candidate_id) {
-        const { data: cand } = await supabase
+        const { data: cand } = await db()
           .from("candidates")
           .select("candidate_name")
           .eq("id", candidate_id)

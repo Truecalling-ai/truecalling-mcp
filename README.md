@@ -163,18 +163,42 @@ The installer wires **Claude Code**. For **Claude Desktop**, copy the same `true
 Stdio is for local clients (Claude Code/Desktop). For remote MCP clients such as **Microsoft Copilot Studio**, run the same server in Streamable HTTP mode:
 
 ```bash
-TC_MCP_HTTP_API_KEY="$(node -e 'console.log(require("crypto").randomBytes(32).toString("hex"))')" \
 npm run start:http   # or: node dist/index.js --http
 ```
 
 - Endpoint: `POST /mcp` (stateless Streamable HTTP). `GET /health` is an unauthenticated liveness probe.
-- **`TC_MCP_HTTP_API_KEY` is mandatory** (≥ 16 chars) — the server refuses to start without it. Use a **randomly generated** key (the command above), never a passphrase: this key is the entire perimeter. Clients send it via `x-api-key: <key>` or `Authorization: Bearer <key>`. Failed attempts are throttled per IP (10/min → 429).
-- Port: `TC_MCP_HTTP_PORT` (falls back to `PORT`, then 3000). Request bodies are capped at 4 MB (413 beyond).
-- The Supabase session is process-global and cached on the host's disk, exactly like stdio mode — the HTTP deployment is **single-tenant** (one TrueCalling account per instance). Run it behind HTTPS (any PaaS terminates TLS for you).
-- **Provision the session once at deploy** (call `tc_login` one time), then **don't enable `tc_login`/`tc_logout` in the Copilot Studio tool list**: with many concurrent conversations on one process, a `tc_logout` from one conversation would sign everyone out, and 5 bad logins lock everyone out for 60 s.
+- Port: `TC_MCP_HTTP_PORT` (falls back to `PORT`, then 3000). Request bodies are capped at 4 MB (413 beyond). Failed auth attempts are throttled per IP (10/min → 429). Run behind HTTPS (any PaaS terminates TLS for you).
+
+**Authentication — two modes, resolved per request:**
+
+1. **Personal API keys (`tcmcp_…`) — multi-tenant, the production mode.** Each
+   TrueCalling user generates their own key (app UI, or
+   `node scripts/generate-key.mjs <email>` until the UI ships). The server
+   exchanges the key against the `mcp-key-exchange` edge function for a
+   short-lived user JWT — every request then runs **as that user** under RLS.
+   No session is stored server-side; revoking a key (DB) takes effect in ≤ 5
+   minutes. `tc_login`/`tc_logout` are NOT exposed on these requests (the key
+   is the credential), and a per-key `allowed_tools` list can restrict the
+   tool surface. Backend pieces to deploy once: see [docs/backend/](docs/backend/).
+2. **Legacy single key (`TC_MCP_HTTP_API_KEY`) — optional, owner use.** The
+   historical single-account mode: one strong random key (≥ 16 chars), one
+   process-global session (`tc_login` once). Leave the variable unset to
+   accept personal keys only.
+
+Clients send the key via `x-api-key: <key>` or `Authorization: Bearer <key>`.
+Config: `TC_MCP_KEY_EXCHANGE_URL` overrides the exchange endpoint (defaults to
+`<SUPABASE_URL>/functions/v1/mcp-key-exchange`).
+
 - **Long-running tools**: responses are plain JSON (no streaming), and Power Platform's connector gateway times out around 2 minutes. Prefer the poll-style variants (`fullenrich_enrich_linkedin` + `fullenrich_poll`) over long blocking calls, and keep `enrich_candidate`'s `wait_seconds` well under 120 in Copilot topics.
 
-In **Copilot Studio**: your agent → **Tools → Add a tool → New tool → Model Context Protocol** → server URL `https://<your-host>/mcp`, authentication **API key** with header `x-api-key`.
+In **Copilot Studio**: your agent → **Tools → Add a tool → New tool → Model Context Protocol** → server URL `https://<your-host>/mcp`, authentication **API key** with header `x-api-key` — **each user pastes their own personal key** into their Connect card, so one shared agent still gives every recruiter their own isolated data.
+
+For **ChatGPT** (which doesn't support custom API-key headers), the server
+also implements the MCP OAuth resource-server flow (RFC 9728 discovery +
+per-request bearer validation against Supabase). It is **off by default** and
+fail-closed: set `TC_MCP_OAUTH_ENABLED=true` + `TC_MCP_OAUTH_AUDIENCE=<resource URL>`
+only after the Supabase OAuth Server, DCR and `aud` Auth Hook are configured —
+activation runbook in [docs/OAUTH_PHASE2.md](docs/OAUTH_PHASE2.md).
 
 ---
 

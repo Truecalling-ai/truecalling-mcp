@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { supabase } from "../supabase.js";
+import { db } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
 import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
 
@@ -33,7 +33,7 @@ export function registerEmilyTools(server: McpServer): void {
       let jobTitle = job_title;
       let entId = enterprise_id;
       if (candidate_id) {
-        const { data: cand } = await supabase
+        const { data: cand } = await db()
           .from("candidates")
           .select("candidate_name,job_title,location,enterprise_id,job_description_id,matching_skills")
           .eq("id", candidate_id)
@@ -46,7 +46,7 @@ export function registerEmilyTools(server: McpServer): void {
           entId = entId ?? c.enterprise_id;
           skills = Array.isArray(c.matching_skills) ? c.matching_skills : undefined;
           if (!jobTitle && c.job_description_id) {
-            const { data: jd } = await supabase
+            const { data: jd } = await db()
               .from("job_descriptions")
               .select("job_title")
               .eq("id", c.job_description_id)
@@ -120,7 +120,7 @@ export function registerEmilyTools(server: McpServer): void {
     async ({ candidate_id, message, enterprise_id, to }) => {
       const block = guardWrite("send_whatsapp");
       if (block) return block;
-      const { data: cand, error: cErr } = await supabase
+      const { data: cand, error: cErr } = await db()
         .from("candidates")
         .select("id,candidate_name,enterprise_id,telephone,job_description_id,job_title")
         .eq("id", candidate_id)
@@ -157,7 +157,7 @@ export function registerEmilyTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ candidate_id, limit }) => {
-      const { data, error } = await supabase
+      const { data, error } = await db()
         .from("whatsapp_messages")
         .select("id,direction,body,status,sent_at,twilio_sid")
         .eq("candidate_id", candidate_id)
@@ -182,7 +182,7 @@ export function registerEmilyTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ enterprise_id, job_description_id, limit }) => {
-      let q = supabase
+      let q = db()
         .from("wa_contacts")
         .select("id,phone,candidate_id,job_description_id,conversation_stage,language,opt_out")
         .limit(limit);

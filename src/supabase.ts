@@ -3,6 +3,7 @@ import { isAuthApiError } from "@supabase/auth-js";
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from "./config.js";
 import { sessionFilePath } from "./session-path.js";
 import { deleteSessionFile, readSessionFile, writeSessionFile } from "./session-file.js";
+import { activeUser, type UserContext } from "./tenants.js";
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   // TrueCalling's data lives in the `api` Postgres schema (PostgREST's default
@@ -12,6 +13,51 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   db: { schema: "api" },
   auth: { persistSession: false, autoRefreshToken: true },
 });
+
+// The concrete client type (schema "api") — keeps db() interchangeable with
+// the legacy `supabase` singleton at every call site.
+type TcClient = typeof supabase;
+
+// Per-UserContext PostgREST clients for the multi-tenant HTTP mode. Keyed by
+// the context object itself: contexts are cached (~4 min) in tenants.ts, so
+// the client is reused across requests of the same key and garbage-collected
+// with the context. These clients carry the user's JWT as a static header and
+// have NO auth state of their own.
+const ctxClients = new WeakMap<UserContext, TcClient>();
+
+/**
+ * The data-access entry point for tools. Returns the client whose identity
+ * matches the current request:
+ * - multi-tenant HTTP request → a client bound to that user's short-lived JWT
+ *   (RLS scopes every query to that user);
+ * - stdio / legacy HTTP mode → the historical global client.
+ */
+export function db(): TcClient {
+  const ctx = activeUser();
+  if (!ctx) return supabase;
+  let client = ctxClients.get(ctx);
+  if (!client) {
+    client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      db: { schema: "api" },
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { Authorization: `Bearer ${ctx.accessToken}` } },
+    });
+    ctxClients.set(ctx, client);
+  }
+  return client;
+}
+
+/**
+ * The auth user id of the current caller — context-aware. In multi-tenant
+ * mode the id comes from the validated key exchange (the per-user client has
+ * no auth session to query); in legacy mode it comes from the global session.
+ */
+export async function getCurrentUserId(): Promise<string | null> {
+  const ctx = activeUser();
+  if (ctx) return ctx.userId;
+  const { data } = await supabase.auth.getUser();
+  return data.user?.id ?? null;
+}
 
 export const SESSION_FILE = sessionFilePath();
 
@@ -107,6 +153,9 @@ let authPromise: Promise<boolean> | null = null;
  * Throws NotSignedInError if no session can be established without credentials.
  */
 export async function ensureAuth(): Promise<void> {
+  // Multi-tenant request: the key exchange already authenticated the caller;
+  // the per-request JWT is the credential. Nothing to restore from disk.
+  if (activeUser()) return;
   if (!authPromise) {
     authPromise = (async () => {
       // If we already have an in-memory session (just signed in this process), short-circuit.
@@ -189,6 +238,10 @@ export async function getAuthStatus(): Promise<{
 }
 
 export async function getAccessToken(): Promise<string> {
+  // Multi-tenant request: forward the caller's own short-lived JWT — edge
+  // functions and RLS then act as that user.
+  const ctx = activeUser();
+  if (ctx) return ctx.accessToken;
   await ensureAuth();
   const { data } = await supabase.auth.getSession();
   if (!data.session) throw new NotSignedInError();

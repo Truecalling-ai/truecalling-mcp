@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { supabase } from "../supabase.js";
+import { db } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
 import { ok, err, guardWrite, authedRegisterTool } from "../util.js";
 
@@ -21,7 +21,7 @@ export function registerPsyTools(server: McpServer): void {
     async ({ candidate_id, lang }) => {
       const block = guardWrite("create_psy_assignment");
       if (block) return block;
-      const { data, error } = await supabase
+      const { data, error } = await db()
         .from("psy_assignments")
         .insert({ candidate_id, lang, status: "pending" })
         .select("id,token,lang,status,created_at")
@@ -40,7 +40,7 @@ export function registerPsyTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ lang }) => {
-      const { data, error } = await supabase.from("psy_items").select("*").eq("lang", lang);
+      const { data, error } = await db().from("psy_items").select("*").eq("lang", lang);
       if (error) return err(error.message);
       return ok({ count: data?.length ?? 0, items: data ?? [] });
     },
@@ -56,7 +56,7 @@ export function registerPsyTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ token }) => {
-      const { data, error } = await supabase
+      const { data, error } = await db()
         .from("psy_assignments")
         .select("*, submissions:submissions(*)")
         .eq("token", token)

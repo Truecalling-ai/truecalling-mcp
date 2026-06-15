@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { supabase } from "../supabase.js";
+import { db, getCurrentUserId } from "../supabase.js";
 import { invokeEdge } from "../edge.js";
 import { ok, err, guardWrite, sanitizeWritable, authedRegisterTool } from "../util.js";
 
@@ -43,10 +43,9 @@ function contactPublic(contact: Record<string, unknown>): Record<string, unknown
 // get_my_enterprise). Returns null id when ambiguous so the tool can ask for
 // an explicit enterprise_id.
 async function resolveEnterpriseId(): Promise<{ id?: string; error?: string }> {
-  const { data: userData } = await supabase.auth.getUser();
-  const authUserId = userData.user?.id;
+  const authUserId = await getCurrentUserId();
   if (!authUserId) return { error: "No authenticated user." };
-  const { data: members, error } = await supabase
+  const { data: members, error } = await db()
     .from("enterprises_team")
     .select("enterprise_id")
     .eq("auth_user_id", authUserId);
@@ -119,7 +118,7 @@ export function registerCandidatesTools(server: McpServer): void {
 
       // Dedupe by LinkedIn within the enterprise (the app does the same).
       if (liNorm) {
-        const { data: dup } = await supabase
+        const { data: dup } = await db()
           .from("candidates")
           .select("id")
           .eq("enterprise_id", entId)
@@ -152,7 +151,7 @@ export function registerCandidatesTools(server: McpServer): void {
         // the resolved enterprise_id or inject a dedupe-key/id.
         ...sanitizeWritable(extra ?? {}, "update"),
       };
-      const { data, error } = await supabase.from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
+      const { data, error } = await db().from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
       if (error) return err(error.message);
       const created = data as { id?: string } | null;
       return ok({ id: created?.id, created: true, candidate: created });
@@ -183,7 +182,7 @@ export function registerCandidatesTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true },
     },
     async ({ job_description_id, status, fu_status, search, limit, offset }) => {
-      let q = supabase.from("candidates").select(LIST_COLUMNS).range(offset, offset + limit - 1);
+      let q = db().from("candidates").select(LIST_COLUMNS).range(offset, offset + limit - 1);
       if (job_description_id) q = q.eq("job_description_id", job_description_id);
       if (status) q = q.eq("status", status);
       if (fu_status) q = q.eq("fu_status", fu_status);
@@ -218,7 +217,7 @@ export function registerCandidatesTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ id, include_raw_contact }) => {
-      const { data, error } = await supabase.from("candidates").select("*").eq("id", id).maybeSingle();
+      const { data, error } = await db().from("candidates").select("*").eq("id", id).maybeSingle();
       if (error) return err(error.message);
       if (!data) return err(`Candidate ${id} not found (or hidden by RLS). Try list_candidates() first.`);
       // Don't dump the raw enrichment blob into the transcript unless asked.
@@ -250,7 +249,7 @@ export function registerCandidatesTools(server: McpServer): void {
       // Strip tenancy/identity/server-owned columns so a caller can't re-home the
       // row to another enterprise or tamper with scores via a free-form patch.
       const patchN = sanitizeWritable(patch, "update");
-      const { data, error } = await supabase.from("candidates").update(patchN).eq("id", id).select().maybeSingle();
+      const { data, error } = await db().from("candidates").update(patchN).eq("id", id).select().maybeSingle();
       if (error) return err(error.message);
       return ok(data ?? { id, updated: true });
     },
@@ -272,7 +271,7 @@ export function registerCandidatesTools(server: McpServer): void {
     async ({ id, status }) => {
       const block = guardWrite("update_candidate_status");
       if (block) return block;
-      const { data, error } = await supabase
+      const { data, error } = await db()
         .from("candidates")
         .update({ status })
         .eq("id", id)
@@ -296,7 +295,7 @@ export function registerCandidatesTools(server: McpServer): void {
     async ({ id }) => {
       const block = guardWrite("delete_candidate");
       if (block) return block;
-      const { data, error } = await supabase
+      const { data, error } = await db()
         .from("candidates")
         .update({ status: "deleted" })
         .eq("id", id)
@@ -349,7 +348,7 @@ export function registerCandidatesTools(server: McpServer): void {
     async ({ id, wait_seconds }) => {
       const block = guardWrite("enrich_candidate");
       if (block) return block;
-      const { data: cand, error: cErr } = await supabase
+      const { data: cand, error: cErr } = await db()
         .from("candidates")
         .select("id,candidate_name,linkedin_url,linkedin_norm,linkedin")
         .eq("id", id)
@@ -413,7 +412,7 @@ export function registerCandidatesTools(server: McpServer): void {
       const email = (contact.work_email ?? contact.personal_email ?? null) as string | null;
       const phones = (contact.all_phones ?? []) as string[];
       if (email || phones.length) {
-        const { error: uErr } = await supabase
+        const { error: uErr } = await db()
           .from("candidates")
           .update({
             ...(email ? { email } : {}),

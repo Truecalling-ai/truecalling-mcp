@@ -33975,6 +33975,10 @@ var SUPABASE_URL = process.env.SUPABASE_URL ?? DEFAULT_SUPABASE_URL;
 var SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY ?? DEFAULT_SUPABASE_ANON_KEY;
 var READONLY = process.env.TC_MCP_READONLY === "true";
 var FUNCTIONS_URL = `${SUPABASE_URL}/functions/v1`;
+var KEY_EXCHANGE_URL = process.env.TC_MCP_KEY_EXCHANGE_URL ?? `${FUNCTIONS_URL}/mcp-key-exchange`;
+var RESOURCE_URL = process.env.TC_MCP_RESOURCE_URL ?? "https://mcp.truecalling.ai";
+var OAUTH_ENABLED = process.env.TC_MCP_OAUTH_ENABLED === "true";
+var OAUTH_AUDIENCE = process.env.TC_MCP_OAUTH_AUDIENCE || void 0;
 
 // src/session-path.ts
 import { homedir, platform } from "os";
@@ -34050,6 +34054,136 @@ async function deleteSessionFile(path) {
   }
 }
 
+// src/tenants.ts
+import { AsyncLocalStorage } from "async_hooks";
+import { createHash } from "crypto";
+var API_KEY_RE = /^tcmcp_[0-9a-f]{64}$/;
+var als = new AsyncLocalStorage();
+var httpMode = false;
+function markHttpMode() {
+  httpMode = true;
+}
+function runWithContext(ctx, fn) {
+  return als.run(ctx, fn);
+}
+function activeUser() {
+  const store = als.getStore();
+  if (store) return "userId" in store ? store : void 0;
+  if (httpMode) {
+    throw new Error("internal: request context lost \u2014 refusing legacy-session fallback");
+  }
+  return void 0;
+}
+var CACHE_MAX = 1e3;
+var EXPIRY_SAFETY_MS = 6e4;
+var cache = /* @__PURE__ */ new Map();
+async function resolveApiKey(apiKey) {
+  const fullHash = createHash("sha256").update(apiKey).digest("hex");
+  const now = Date.now();
+  const hit = cache.get(fullHash);
+  if (hit && hit.expiresAt > now) return hit.ctx;
+  cache.delete(fullHash);
+  let res;
+  try {
+    res = await fetch(KEY_EXCHANGE_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        apikey: SUPABASE_ANON_KEY,
+        Authorization: `Bearer ${SUPABASE_ANON_KEY}`
+      },
+      body: JSON.stringify({ api_key: apiKey })
+    });
+  } catch (e) {
+    console.error(`[truecalling-mcp] key-exchange unreachable: ${e.message}`);
+    return null;
+  }
+  if (!res.ok) {
+    if (res.status !== 401) {
+      console.error(`[truecalling-mcp] key-exchange failed with status ${res.status}`);
+    }
+    return null;
+  }
+  const data = await res.json().catch(() => null);
+  if (!data?.token || !data.user_id) return null;
+  const ctx = {
+    userId: data.user_id,
+    accessToken: data.token,
+    keyFingerprint: fullHash.slice(0, 12),
+    allowedTools: data.allowed_tools ?? null
+  };
+  const ttlMs = Math.max((data.expires_in ?? 300) * 1e3 - EXPIRY_SAFETY_MS, 3e4);
+  if (cache.size >= CACHE_MAX) {
+    for (const [key, entry] of cache) {
+      if (entry.expiresAt <= now) cache.delete(key);
+    }
+    while (cache.size >= CACHE_MAX) {
+      const oldest = cache.keys().next().value;
+      if (oldest === void 0) break;
+      cache.delete(oldest);
+    }
+  }
+  cache.set(fullHash, { ctx, expiresAt: now + ttlMs });
+  return ctx;
+}
+var JWS_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+function decodeJwtPayload(jwt) {
+  try {
+    const payload = jwt.split(".")[1];
+    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+}
+var bearerCache = /* @__PURE__ */ new Map();
+async function resolveBearer(jwt) {
+  const tokenHash = createHash("sha256").update(jwt).digest("hex");
+  const now = Date.now();
+  const hit = bearerCache.get(tokenHash);
+  if (hit && hit.expiresAt > now) return hit.ctx;
+  bearerCache.delete(tokenHash);
+  const payload = decodeJwtPayload(jwt);
+  if (!payload) return null;
+  if (OAUTH_AUDIENCE) {
+    const aud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+    if (!aud.includes(OAUTH_AUDIENCE)) return null;
+  }
+  let res;
+  try {
+    res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${jwt}` }
+    });
+  } catch (e) {
+    console.error(`[truecalling-mcp] token validation unreachable: ${e.message}`);
+    return null;
+  }
+  if (!res.ok) return null;
+  const user = await res.json().catch(() => null);
+  if (!user?.id) return null;
+  const ctx = {
+    userId: user.id,
+    accessToken: jwt,
+    keyFingerprint: tokenHash.slice(0, 12),
+    allowedTools: null
+  };
+  const expMs = payload.exp ? payload.exp * 1e3 - now - EXPIRY_SAFETY_MS : 0;
+  if (expMs > 0) {
+    const ttlMs = Math.min(expMs, 4 * 6e4);
+    if (bearerCache.size >= CACHE_MAX) {
+      for (const [key, entry] of bearerCache) {
+        if (entry.expiresAt <= now) bearerCache.delete(key);
+      }
+      while (bearerCache.size >= CACHE_MAX) {
+        const oldest = bearerCache.keys().next().value;
+        if (oldest === void 0) break;
+        bearerCache.delete(oldest);
+      }
+    }
+    bearerCache.set(tokenHash, { ctx, expiresAt: now + ttlMs });
+  }
+  return ctx;
+}
+
 // src/supabase.ts
 var supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   // TrueCalling's data lives in the `api` Postgres schema (PostgREST's default
@@ -34059,6 +34193,27 @@ var supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   db: { schema: "api" },
   auth: { persistSession: false, autoRefreshToken: true }
 });
+var ctxClients = /* @__PURE__ */ new WeakMap();
+function db() {
+  const ctx = activeUser();
+  if (!ctx) return supabase;
+  let client = ctxClients.get(ctx);
+  if (!client) {
+    client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      db: { schema: "api" },
+      auth: { persistSession: false, autoRefreshToken: false },
+      global: { headers: { Authorization: `Bearer ${ctx.accessToken}` } }
+    });
+    ctxClients.set(ctx, client);
+  }
+  return client;
+}
+async function getCurrentUserId() {
+  const ctx = activeUser();
+  if (ctx) return ctx.userId;
+  const { data } = await supabase.auth.getUser();
+  return data.user?.id ?? null;
+}
 var SESSION_FILE = sessionFilePath();
 var NotSignedInError = class extends Error {
   constructor() {
@@ -34118,6 +34273,7 @@ async function tryRestoreFromDisk() {
 }
 var authPromise = null;
 async function ensureAuth() {
+  if (activeUser()) return;
   if (!authPromise) {
     authPromise = (async () => {
       const { data: cur } = await supabase.auth.getSession();
@@ -34170,6 +34326,8 @@ async function getAuthStatus() {
   };
 }
 async function getAccessToken() {
+  const ctx = activeUser();
+  if (ctx) return ctx.accessToken;
   await ensureAuth();
   const { data } = await supabase.auth.getSession();
   if (!data.session) throw new NotSignedInError();
@@ -42487,10 +42645,9 @@ function contactPublic(contact) {
   return rest;
 }
 async function resolveEnterpriseId() {
-  const { data: userData } = await supabase.auth.getUser();
-  const authUserId = userData.user?.id;
+  const authUserId = await getCurrentUserId();
   if (!authUserId) return { error: "No authenticated user." };
-  const { data: members, error: error2 } = await supabase.from("enterprises_team").select("enterprise_id").eq("auth_user_id", authUserId);
+  const { data: members, error: error2 } = await db().from("enterprises_team").select("enterprise_id").eq("auth_user_id", authUserId);
   if (error2) return { error: error2.message };
   const ids = [...new Set((members ?? []).map((m) => m.enterprise_id))];
   if (ids.length === 0) return { error: "Your account is not a member of any enterprise." };
@@ -42545,7 +42702,7 @@ function registerCandidatesTools(server) {
       }
       const liNorm = linkedin_url ? normalizeLinkedIn(linkedin_url) : "";
       if (liNorm) {
-        const { data: dup } = await supabase.from("candidates").select("id").eq("enterprise_id", entId).eq("linkedin_norm", liNorm).maybeSingle();
+        const { data: dup } = await db().from("candidates").select("id").eq("enterprise_id", entId).eq("linkedin_norm", liNorm).maybeSingle();
         const dupId = dup?.id;
         if (dupId)
           return ok({
@@ -42572,7 +42729,7 @@ function registerCandidatesTools(server) {
         // the resolved enterprise_id or inject a dedupe-key/id.
         ...sanitizeWritable(extra ?? {}, "update")
       };
-      const { data, error: error2 } = await supabase.from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
+      const { data, error: error2 } = await db().from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
       if (error2) return err(error2.message);
       const created = data;
       return ok({ id: created?.id, created: true, candidate: created });
@@ -42594,7 +42751,7 @@ function registerCandidatesTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: true }
     },
     async ({ job_description_id, status, fu_status, search, limit, offset }) => {
-      let q = supabase.from("candidates").select(LIST_COLUMNS).range(offset, offset + limit - 1);
+      let q = db().from("candidates").select(LIST_COLUMNS).range(offset, offset + limit - 1);
       if (job_description_id) q = q.eq("job_description_id", job_description_id);
       if (status) q = q.eq("status", status);
       if (fu_status) q = q.eq("fu_status", fu_status);
@@ -42619,7 +42776,7 @@ function registerCandidatesTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async ({ id, include_raw_contact }) => {
-      const { data, error: error2 } = await supabase.from("candidates").select("*").eq("id", id).maybeSingle();
+      const { data, error: error2 } = await db().from("candidates").select("*").eq("id", id).maybeSingle();
       if (error2) return err(error2.message);
       if (!data) return err(`Candidate ${id} not found (or hidden by RLS). Try list_candidates() first.`);
       const row = data;
@@ -42644,7 +42801,7 @@ function registerCandidatesTools(server) {
       const block = guardWrite("update_candidate");
       if (block) return block;
       const patchN = sanitizeWritable(patch, "update");
-      const { data, error: error2 } = await supabase.from("candidates").update(patchN).eq("id", id).select().maybeSingle();
+      const { data, error: error2 } = await db().from("candidates").update(patchN).eq("id", id).select().maybeSingle();
       if (error2) return err(error2.message);
       return ok(data ?? { id, updated: true });
     }
@@ -42663,7 +42820,7 @@ function registerCandidatesTools(server) {
     async ({ id, status }) => {
       const block = guardWrite("update_candidate_status");
       if (block) return block;
-      const { data, error: error2 } = await supabase.from("candidates").update({ status }).eq("id", id).select("id,status").maybeSingle();
+      const { data, error: error2 } = await db().from("candidates").update({ status }).eq("id", id).select("id,status").maybeSingle();
       if (error2) return err(error2.message);
       return ok(data ?? { id, status });
     }
@@ -42679,7 +42836,7 @@ function registerCandidatesTools(server) {
     async ({ id }) => {
       const block = guardWrite("delete_candidate");
       if (block) return block;
-      const { data, error: error2 } = await supabase.from("candidates").update({ status: "deleted" }).eq("id", id).select("id,status").maybeSingle();
+      const { data, error: error2 } = await db().from("candidates").update({ status: "deleted" }).eq("id", id).select("id,status").maybeSingle();
       if (error2) return err(error2.message);
       return ok(data ?? { id, deleted: true });
     }
@@ -42713,7 +42870,7 @@ function registerCandidatesTools(server) {
     async ({ id, wait_seconds }) => {
       const block = guardWrite("enrich_candidate");
       if (block) return block;
-      const { data: cand, error: cErr } = await supabase.from("candidates").select("id,candidate_name,linkedin_url,linkedin_norm,linkedin").eq("id", id).maybeSingle();
+      const { data: cand, error: cErr } = await db().from("candidates").select("id,candidate_name,linkedin_url,linkedin_norm,linkedin").eq("id", id).maybeSingle();
       if (cErr) return err(cErr.message);
       if (!cand) return err(`Candidate ${id} not found.`);
       const linkedin = cand.linkedin_url || cand.linkedin_norm || cand.linkedin;
@@ -42766,7 +42923,7 @@ function registerCandidatesTools(server) {
       const email2 = contact.work_email ?? contact.personal_email ?? null;
       const phones = contact.all_phones ?? [];
       if (email2 || phones.length) {
-        const { error: uErr } = await supabase.from("candidates").update({
+        const { error: uErr } = await db().from("candidates").update({
           ...email2 ? { email: email2 } : {},
           ...phones.length ? { telephone: phones } : {},
           fullenrich_contact: contact.raw ?? contact,
@@ -42871,7 +43028,7 @@ function registerJobsTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async ({ is_active, search, limit, offset }) => {
-      let q = supabase.from("job_descriptions").select(JD_COLUMNS).range(offset, offset + limit - 1);
+      let q = db().from("job_descriptions").select(JD_COLUMNS).range(offset, offset + limit - 1);
       if (is_active !== void 0) q = q.eq("is_active", is_active);
       if (search) q = q.ilike("job_title", `%${search}%`);
       const { data, error: error2 } = await q;
@@ -42888,7 +43045,7 @@ function registerJobsTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async ({ id }) => {
-      const { data, error: error2 } = await supabase.from("job_descriptions").select("*").eq("id", id).maybeSingle();
+      const { data, error: error2 } = await db().from("job_descriptions").select("*").eq("id", id).maybeSingle();
       if (error2) return err(error2.message);
       if (!data) return err(`JD ${id} not found.`);
       return ok(data);
@@ -42929,7 +43086,7 @@ function registerJobsTools(server) {
         }
       }
       bulletizeJdText(p);
-      const { data, error: error2 } = await supabase.from("job_descriptions").insert(p).select().maybeSingle();
+      const { data, error: error2 } = await db().from("job_descriptions").insert(p).select().maybeSingle();
       if (error2) return err(error2.message);
       return ok(data ?? { created: true });
     }
@@ -42950,7 +43107,7 @@ function registerJobsTools(server) {
       if (block) return block;
       const patchN = sanitizeWritable(patch, "update");
       bulletizeJdText(patchN);
-      const { data, error: error2 } = await supabase.from("job_descriptions").update(patchN).eq("id", id).select().maybeSingle();
+      const { data, error: error2 } = await db().from("job_descriptions").update(patchN).eq("id", id).select().maybeSingle();
       if (error2) return err(error2.message);
       return ok(data ?? { id, updated: true });
     }
@@ -42997,9 +43154,9 @@ function readParamsCache() {
     return {};
   }
 }
-function writeParamsCache(cache) {
+function writeParamsCache(cache2) {
   try {
-    writeFileSync(PARAMS_CACHE_FILE, JSON.stringify(cache, null, 2));
+    writeFileSync(PARAMS_CACHE_FILE, JSON.stringify(cache2, null, 2));
   } catch {
   }
 }
@@ -43381,7 +43538,7 @@ function registerSearchTools(server) {
       annotations: { readOnlyHint: true, openWorldHint: true }
     },
     async ({ jd_id, location: location2, size, max_pages, expand_title, ai_score, ai_score_top, refresh }) => {
-      const { data: jd, error: jdErr } = await supabase.from("job_descriptions").select(
+      const { data: jd, error: jdErr } = await db().from("job_descriptions").select(
         "id,job_title,location,job_summary,job_description,key_responsibilities,expectation,requirements,qualifications,soft_skills"
       ).eq("id", jd_id).maybeSingle();
       if (jdErr) return err(jdErr.message);
@@ -43397,7 +43554,8 @@ function registerSearchTools(server) {
         jd.requirements,
         jd.qualifications
       ].filter(Boolean).join("\n\n");
-      const cacheKey2 = `${jd_id}|loc=${(location2 ?? "").trim().toLowerCase()}|exp=${expand_title !== false}`;
+      const cacheNs = activeUser()?.userId ?? "local";
+      const cacheKey2 = `${cacheNs}|${jd_id}|loc=${(location2 ?? "").trim().toLowerCase()}|exp=${expand_title !== false}`;
       const paramsCache = readParamsCache();
       let titleKeyword;
       let city;
@@ -43639,7 +43797,7 @@ function registerEmilyTools(server) {
       let jobTitle = job_title;
       let entId = enterprise_id;
       if (candidate_id) {
-        const { data: cand } = await supabase.from("candidates").select("candidate_name,job_title,location,enterprise_id,job_description_id,matching_skills").eq("id", candidate_id).maybeSingle();
+        const { data: cand } = await db().from("candidates").select("candidate_name,job_title,location,enterprise_id,job_description_id,matching_skills").eq("id", candidate_id).maybeSingle();
         const c = cand;
         if (c) {
           name = name ?? c.candidate_name;
@@ -43648,7 +43806,7 @@ function registerEmilyTools(server) {
           entId = entId ?? c.enterprise_id;
           skills = Array.isArray(c.matching_skills) ? c.matching_skills : void 0;
           if (!jobTitle && c.job_description_id) {
-            const { data: jd } = await supabase.from("job_descriptions").select("job_title").eq("id", c.job_description_id).maybeSingle();
+            const { data: jd } = await db().from("job_descriptions").select("job_title").eq("id", c.job_description_id).maybeSingle();
             jobTitle = jd?.job_title ?? void 0;
           }
         }
@@ -43709,7 +43867,7 @@ function registerEmilyTools(server) {
     async ({ candidate_id, message, enterprise_id, to }) => {
       const block = guardWrite("send_whatsapp");
       if (block) return block;
-      const { data: cand, error: cErr } = await supabase.from("candidates").select("id,candidate_name,enterprise_id,telephone,job_description_id,job_title").eq("id", candidate_id).maybeSingle();
+      const { data: cand, error: cErr } = await db().from("candidates").select("id,candidate_name,enterprise_id,telephone,job_description_id,job_title").eq("id", candidate_id).maybeSingle();
       if (cErr) return err(cErr.message);
       if (!cand) return err(`Candidate ${candidate_id} not found.`);
       const c = cand;
@@ -43742,7 +43900,7 @@ function registerEmilyTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async ({ candidate_id, limit }) => {
-      const { data, error: error2 } = await supabase.from("whatsapp_messages").select("id,direction,body,status,sent_at,twilio_sid").eq("candidate_id", candidate_id).order("sent_at", { ascending: false }).limit(limit);
+      const { data, error: error2 } = await db().from("whatsapp_messages").select("id,direction,body,status,sent_at,twilio_sid").eq("candidate_id", candidate_id).order("sent_at", { ascending: false }).limit(limit);
       if (error2) return err(error2.message);
       return ok({ count: data?.length ?? 0, messages: data ?? [] });
     }
@@ -43760,7 +43918,7 @@ function registerEmilyTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async ({ enterprise_id, job_description_id, limit }) => {
-      let q = supabase.from("wa_contacts").select("id,phone,candidate_id,job_description_id,conversation_stage,language,opt_out").limit(limit);
+      let q = db().from("wa_contacts").select("id,phone,candidate_id,job_description_id,conversation_stage,language,opt_out").limit(limit);
       if (enterprise_id) q = q.eq("enterprise_id", enterprise_id);
       if (job_description_id) q = q.eq("job_description_id", job_description_id);
       const { data, error: error2 } = await q;
@@ -43822,7 +43980,7 @@ function registerPsyTools(server) {
     async ({ candidate_id, lang }) => {
       const block = guardWrite("create_psy_assignment");
       if (block) return block;
-      const { data, error: error2 } = await supabase.from("psy_assignments").insert({ candidate_id, lang, status: "pending" }).select("id,token,lang,status,created_at").maybeSingle();
+      const { data, error: error2 } = await db().from("psy_assignments").insert({ candidate_id, lang, status: "pending" }).select("id,token,lang,status,created_at").maybeSingle();
       if (error2) return err(error2.message);
       return ok(data ?? { created: true });
     }
@@ -43836,7 +43994,7 @@ function registerPsyTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async ({ lang }) => {
-      const { data, error: error2 } = await supabase.from("psy_items").select("*").eq("lang", lang);
+      const { data, error: error2 } = await db().from("psy_items").select("*").eq("lang", lang);
       if (error2) return err(error2.message);
       return ok({ count: data?.length ?? 0, items: data ?? [] });
     }
@@ -43850,7 +44008,7 @@ function registerPsyTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async ({ token }) => {
-      const { data, error: error2 } = await supabase.from("psy_assignments").select("*, submissions:submissions(*)").eq("token", token).maybeSingle();
+      const { data, error: error2 } = await db().from("psy_assignments").select("*, submissions:submissions(*)").eq("token", token).maybeSingle();
       if (error2) return err(error2.message);
       if (!data) return err(`No psy assignment found for token ${token}.`);
       return ok(data);
@@ -43928,7 +44086,7 @@ function registerReportsTools(server) {
         return err("Provide pdf_url (from generate_candidate_pdf) or submission_id \u2014 the report PDF is required.");
       let name = candidate_name;
       if (!name && candidate_id) {
-        const { data: cand } = await supabase.from("candidates").select("candidate_name").eq("id", candidate_id).maybeSingle();
+        const { data: cand } = await db().from("candidates").select("candidate_name").eq("id", candidate_id).maybeSingle();
         name = cand?.candidate_name ?? void 0;
       }
       const result = await invokeEdge("send-candidate-report", {
@@ -43955,15 +44113,14 @@ function registerEnterprisesTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async () => {
-      const { data: userData } = await supabase.auth.getUser();
-      const authUserId = userData.user?.id;
+      const authUserId = await getCurrentUserId();
       if (!authUserId) return err("No authenticated user.");
-      const { data: members, error: memberErr } = await supabase.from("enterprises_team").select("id,enterprise_id,role,full_name,email").eq("auth_user_id", authUserId);
+      const { data: members, error: memberErr } = await db().from("enterprises_team").select("id,enterprise_id,role,full_name,email").eq("auth_user_id", authUserId);
       if (memberErr) return err(memberErr.message);
       if (!members || members.length === 0)
         return err("Authenticated user is not a member of any enterprise.");
       const ids = [...new Set(members.map((m) => m.enterprise_id))];
-      const { data: enterprises, error: entErr } = await supabase.from("enterprises").select("*").in("id", ids);
+      const { data: enterprises, error: entErr } = await db().from("enterprises").select("*").in("id", ids);
       if (entErr) return err(entErr.message);
       const byId = new Map((enterprises ?? []).map((e) => [e.id, e]));
       const memberships = members.map((m) => ({
@@ -43990,7 +44147,7 @@ function registerEnterprisesTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async ({ enterprise_id }) => {
-      const { data, error: error2 } = await supabase.from("enterprises_team").select("id,full_name,email,role,auth_user_id").eq("enterprise_id", enterprise_id);
+      const { data, error: error2 } = await db().from("enterprises_team").select("id,full_name,email,role,auth_user_id").eq("enterprise_id", enterprise_id);
       if (error2) return err(error2.message);
       return ok({ count: data?.length ?? 0, members: data ?? [] });
     }
@@ -44004,7 +44161,7 @@ function registerEnterprisesTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async ({ enterprise_id }) => {
-      const { data, error: error2 } = await supabase.from("enterprises").select(
+      const { data, error: error2 } = await db().from("enterprises").select(
         "id,enterprise_name,country,logo,whatsapp_from,emily_tone,emily_company_context,adm_company,adm_tc,email_suffix"
       ).eq("id", enterprise_id).maybeSingle();
       if (error2) return err(error2.message);
@@ -44205,12 +44362,19 @@ function registerAnalysisTools(server) {
 // src/server.ts
 var SERVER_NAME = "truecalling-mcp-server";
 var SERVER_VERSION = "0.2.0";
-function buildServer() {
+function buildServer(options) {
   const server = new McpServer({
     name: SERVER_NAME,
     version: SERVER_VERSION
   });
-  registerAuthTools(server);
+  if (options?.allowedTools && options.allowedTools.length > 0) {
+    const allowed = new Set(options.allowedTools);
+    const original = server.registerTool.bind(server);
+    server.registerTool = (name, config2, handler) => allowed.has(name) ? original(name, config2, handler) : void 0;
+  }
+  if (options?.exposeAuthTools !== false) {
+    registerAuthTools(server);
+  }
   registerCandidatesTools(server);
   registerJobsTools(server);
   registerSearchTools(server);
@@ -44227,7 +44391,7 @@ function buildServer() {
 import {
   createServer
 } from "http";
-import { createHash, timingSafeEqual } from "crypto";
+import { createHash as createHash2, timingSafeEqual } from "crypto";
 
 // node_modules/@hono/node-server/dist/index.mjs
 import { Http2ServerRequest as Http2ServerRequest2, constants as h2constants } from "http2";
@@ -44460,14 +44624,14 @@ var Response2 = class _Response {
     }
   }
   get headers() {
-    const cache = this[cacheKey];
-    if (cache) {
-      if (!(cache[2] instanceof Headers)) {
-        cache[2] = new Headers(
-          cache[2] || { "content-type": "text/plain; charset=UTF-8" }
+    const cache2 = this[cacheKey];
+    if (cache2) {
+      if (!(cache2[2] instanceof Headers)) {
+        cache2[2] = new Headers(
+          cache2[2] || { "content-type": "text/plain; charset=UTF-8" }
         );
       }
-      return cache[2];
+      return cache2[2];
     }
     return this[getResponseCache]().headers;
   }
@@ -45579,7 +45743,7 @@ function recordAuthFailure(ip) {
   }
 }
 function sha2562(value) {
-  return createHash("sha256").update(value).digest();
+  return createHash2("sha256").update(value).digest();
 }
 function keyMatches(provided, expected) {
   return timingSafeEqual(sha2562(provided), sha2562(expected));
@@ -45592,6 +45756,27 @@ function extractApiKey(req) {
     return auth.slice("bearer ".length).trim();
   }
   return null;
+}
+var RESOURCE_METADATA_URL = `${RESOURCE_URL}/.well-known/oauth-protected-resource`;
+function setBearerChallenge(res, invalidToken = false) {
+  if (res.headersSent || !OAUTH_ENABLED) return;
+  const attrs = invalidToken ? `error="invalid_token", ` : "";
+  res.setHeader("WWW-Authenticate", `Bearer ${attrs}resource_metadata="${RESOURCE_METADATA_URL}"`);
+}
+function unauthorized(res, message, invalidToken = false) {
+  setBearerChallenge(res, invalidToken);
+  jsonError(res, 401, message);
+}
+function clientIp(req) {
+  const xff = req.headers["x-forwarded-for"];
+  if (typeof xff === "string" && xff.length > 0) {
+    const last = xff.split(",").pop()?.trim();
+    if (last) {
+      const v4 = last.match(/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/);
+      return v4 ? v4[1] : last;
+    }
+  }
+  return req.socket.remoteAddress ?? "unknown";
 }
 function jsonError(res, status, message, code = -32e3) {
   if (res.headersSent) {
@@ -45648,7 +45833,7 @@ function readBody(req, maxBytes) {
     });
   });
 }
-async function handleMcpRequest(req, res) {
+async function handleMcpRequest(req, res, user) {
   const declaredLength = Number(req.headers["content-length"] ?? 0);
   if (declaredLength > MAX_BODY_BYTES) {
     jsonError(res, 413, `Request body too large (max ${MAX_BODY_BYTES} bytes)`);
@@ -45674,7 +45859,9 @@ async function handleMcpRequest(req, res) {
     if (req.rawHeaders[i].toLowerCase() === "accept") req.rawHeaders.splice(i, 2);
   }
   req.rawHeaders.push("accept", NORMALIZED_ACCEPT);
-  const server = buildServer();
+  const server = buildServer(
+    user ? { exposeAuthTools: false, allowedTools: user.allowedTools } : void 0
+  );
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: void 0,
     // Plain JSON responses (still spec-compliant) — broadest client
@@ -45689,10 +45876,20 @@ async function handleMcpRequest(req, res) {
   await transport.handleRequest(req, res, parsedBody);
 }
 function startHttpServer() {
-  const apiKey = process.env.TC_MCP_HTTP_API_KEY;
-  if (!apiKey || apiKey.length < MIN_API_KEY_LENGTH) {
+  markHttpMode();
+  const legacyKey = process.env.TC_MCP_HTTP_API_KEY;
+  if (legacyKey !== void 0 && legacyKey.length < MIN_API_KEY_LENGTH) {
     console.error(
-      `[truecalling-mcp] HTTP mode requires TC_MCP_HTTP_API_KEY (>= ${MIN_API_KEY_LENGTH} chars). Generate one with: node -e "console.log(crypto.randomBytes(32).toString('hex'))"`
+      `[truecalling-mcp] TC_MCP_HTTP_API_KEY must be >= ${MIN_API_KEY_LENGTH} chars (or unset). Generate one with: node -e "console.log(crypto.randomBytes(32).toString('hex'))"`
+    );
+    process.exit(1);
+  }
+  if (!legacyKey) {
+    console.error("[truecalling-mcp] HTTP mode: self-service keys only (no legacy TC_MCP_HTTP_API_KEY)");
+  }
+  if (OAUTH_ENABLED && !OAUTH_AUDIENCE) {
+    console.error(
+      "[truecalling-mcp] TC_MCP_OAUTH_ENABLED=true requires TC_MCP_OAUTH_AUDIENCE (the resource URL minted into tokens by the Supabase aud Auth Hook \u2014 see docs/OAUTH_PHASE2.md)."
     );
     process.exit(1);
   }
@@ -45700,32 +45897,95 @@ function startHttpServer() {
   const httpServer = createServer((req, res) => {
     void (async () => {
       const url = new URL(req.url ?? "/", "http://localhost");
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, {
+          "access-control-allow-origin": "*",
+          "access-control-allow-methods": "GET, POST, OPTIONS",
+          "access-control-allow-headers": "authorization, content-type, x-api-key, mcp-protocol-version",
+          "access-control-max-age": "86400"
+        });
+        res.end();
+        return;
+      }
       if (url.pathname === "/health") {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ status: "ok" }));
+        return;
+      }
+      if (url.pathname === "/.well-known/oauth-protected-resource" || url.pathname === "/.well-known/oauth-protected-resource/mcp") {
+        if (!OAUTH_ENABLED) {
+          jsonError(res, 404, "OAuth is not enabled on this server");
+          return;
+        }
+        res.writeHead(200, {
+          "content-type": "application/json",
+          "access-control-allow-origin": "*"
+        });
+        res.end(
+          JSON.stringify({
+            resource: RESOURCE_URL,
+            authorization_servers: [`${SUPABASE_URL}/auth/v1`],
+            bearer_methods_supported: ["header"]
+          })
+        );
         return;
       }
       if (url.pathname !== "/mcp") {
         jsonError(res, 404, "Not found. MCP endpoint is POST /mcp");
         return;
       }
-      const ip = req.socket.remoteAddress ?? "unknown";
+      const ip = clientIp(req);
       if (authThrottled(ip)) {
+        setBearerChallenge(res);
         jsonError(res, 429, "Too many failed authentication attempts. Try again in a minute.");
         return;
       }
       const provided = extractApiKey(req);
-      if (!provided || !keyMatches(provided, apiKey)) {
-        recordAuthFailure(ip);
-        jsonError(res, 401, "Unauthorized: provide the API key via x-api-key or Authorization: Bearer");
+      if (!provided) {
+        unauthorized(res, "Unauthorized: provide an API key (x-api-key) or an OAuth bearer token");
         return;
       }
-      if (req.method !== "POST") {
-        res.setHeader("allow", "POST");
-        jsonError(res, 405, "Method not allowed. Use POST.");
+      if (API_KEY_RE.test(provided)) {
+        const user = await resolveApiKey(provided);
+        if (!user) {
+          recordAuthFailure(ip);
+          unauthorized(res, "Invalid or revoked API key");
+          return;
+        }
+        if (req.method !== "POST") {
+          res.setHeader("allow", "POST");
+          jsonError(res, 405, "Method not allowed. Use POST.");
+          return;
+        }
+        await runWithContext(user, () => handleMcpRequest(req, res, user));
         return;
       }
-      await handleMcpRequest(req, res);
+      if (legacyKey && keyMatches(provided, legacyKey)) {
+        if (req.method !== "POST") {
+          res.setHeader("allow", "POST");
+          jsonError(res, 405, "Method not allowed. Use POST.");
+          return;
+        }
+        await runWithContext({ legacy: true }, () => handleMcpRequest(req, res, null));
+        return;
+      }
+      if (OAUTH_ENABLED && JWS_RE.test(provided)) {
+        const user = await resolveBearer(provided);
+        if (!user) {
+          recordAuthFailure(ip);
+          unauthorized(res, "Invalid or expired token", true);
+          return;
+        }
+        if (req.method !== "POST") {
+          res.setHeader("allow", "POST");
+          jsonError(res, 405, "Method not allowed. Use POST.");
+          return;
+        }
+        await runWithContext(user, () => handleMcpRequest(req, res, user));
+        return;
+      }
+      recordAuthFailure(ip);
+      unauthorized(res, "Invalid or revoked credentials");
     })().catch((e) => {
       console.error("[truecalling-mcp] http request error:", e);
       jsonError(res, 500, "Internal server error", -32603);
