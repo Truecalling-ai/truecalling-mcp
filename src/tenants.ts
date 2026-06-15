@@ -185,7 +185,14 @@ export async function resolveBearer(jwt: string): Promise<UserContext | null> {
   // GoTrue itself validates (still a real TrueCalling user token).
   if (OAUTH_AUDIENCE) {
     const aud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-    if (!aud.includes(OAUTH_AUDIENCE)) return null;
+    if (!aud.includes(OAUTH_AUDIENCE)) {
+      // DIAGNOSTIC (temporaire) — logue seulement l'aud (pas le jeton) pour
+      // pointer un mismatch hook/audience. À retirer une fois OAuth validé.
+      console.error(
+        `[oauth-debug] bearer REJECTED on audience: token aud=${JSON.stringify(payload.aud)} expected=${JSON.stringify(OAUTH_AUDIENCE)}`,
+      );
+      return null;
+    }
   }
 
   let res: Response;
@@ -197,7 +204,15 @@ export async function resolveBearer(jwt: string): Promise<UserContext | null> {
     console.error(`[truecalling-mcp] token validation unreachable: ${(e as Error).message}`);
     return null;
   }
-  if (!res.ok) return null;
+  if (!res.ok) {
+    // DIAGNOSTIC (temporaire) — GoTrue a rejeté le jeton (signature/expiré/
+    // révoqué). Logue le statut + l'aud, jamais le jeton. À retirer ensuite.
+    console.error(
+      `[oauth-debug] bearer REJECTED by GoTrue: status=${res.status} aud=${JSON.stringify(payload.aud)}`,
+    );
+    return null;
+  }
+  console.error(`[oauth-debug] bearer ACCEPTED: aud=${JSON.stringify(payload.aud)}`);
 
   const user = (await res.json().catch(() => null)) as { id?: string } | null;
   if (!user?.id) return null;

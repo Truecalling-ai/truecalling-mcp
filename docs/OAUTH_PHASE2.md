@@ -78,6 +78,23 @@ telle quelle — seule la **source** du contexte change.
 5. **Tests** : JWT valide → 200 + contexte ; expiré → 401 ; mauvais `aud` →
    401 ; JWKS rotation ; tokenless → 401 + `WWW-Authenticate`.
 
+## ⚠️ Côté app TrueCalling — PAGE DE CONSENTEMENT (découvert 2026-06-15, BLOQUANT)
+
+Supabase OAuth Server **n'héberge PAS** d'écran de consentement : l'app DOIT
+exposer une page (ex. `https://app.truecalling.ai/oauth/consent`) vers laquelle
+Supabase redirige pendant `/oauth/authorize`. Sans elle, après login
+l'utilisateur reste sur l'app et ChatGPT ne reçoit jamais le code (symptôme
+observé en test réel : « atterri sur l'app web »).
+
+- Référence prête à intégrer : `docs/backend/OAuthConsent.tsx` (React + supabase-js).
+- La page : lit `authorization_id`, exige une session (sinon login en
+  préservant `authorization_id`), `getAuthorizationDetails` → écran « Autoriser
+  ChatGPT ? » → `approveAuthorization` → redirige vers le `redirect_url`
+  (qui porte le code vers ChatGPT). `denyAuthorization` pour le refus.
+- Config Supabase : pointer le « Authorization path » du OAuth Server sur
+  l'URL de cette page.
+- Route **publique** (hors guard d'auth) sinon le guard mange `authorization_id`.
+
 ## Côté clients
 
 - **ChatGPT** : Settings → Connectors → Developer mode → New connector → URL

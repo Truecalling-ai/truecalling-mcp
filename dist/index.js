@@ -34146,7 +34146,12 @@ async function resolveBearer(jwt) {
   if (!payload) return null;
   if (OAUTH_AUDIENCE) {
     const aud = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
-    if (!aud.includes(OAUTH_AUDIENCE)) return null;
+    if (!aud.includes(OAUTH_AUDIENCE)) {
+      console.error(
+        `[oauth-debug] bearer REJECTED on audience: token aud=${JSON.stringify(payload.aud)} expected=${JSON.stringify(OAUTH_AUDIENCE)}`
+      );
+      return null;
+    }
   }
   let res;
   try {
@@ -34157,7 +34162,13 @@ async function resolveBearer(jwt) {
     console.error(`[truecalling-mcp] token validation unreachable: ${e.message}`);
     return null;
   }
-  if (!res.ok) return null;
+  if (!res.ok) {
+    console.error(
+      `[oauth-debug] bearer REJECTED by GoTrue: status=${res.status} aud=${JSON.stringify(payload.aud)}`
+    );
+    return null;
+  }
+  console.error(`[oauth-debug] bearer ACCEPTED: aud=${JSON.stringify(payload.aud)}`);
   const user = await res.json().catch(() => null);
   if (!user?.id) return null;
   const ctx = {
