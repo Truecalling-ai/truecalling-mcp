@@ -42740,10 +42740,33 @@ function registerCandidatesTools(server) {
         // the resolved enterprise_id or inject a dedupe-key/id.
         ...sanitizeWritable(extra ?? {}, "update")
       };
-      const { data, error: error2 } = await db().from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
-      if (error2) return err(error2.message);
+      const dropped = [];
+      let data = null;
+      let lastError = null;
+      for (let attempt = 0; attempt < 16; attempt++) {
+        const res = await db().from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
+        if (!res.error) {
+          data = res.data;
+          lastError = null;
+          break;
+        }
+        lastError = res.error;
+        const badCol = /Could not find the '([^']+)' column/.exec(res.error.message)?.[1];
+        if (badCol && badCol in row) {
+          delete row[badCol];
+          dropped.push(badCol);
+          continue;
+        }
+        break;
+      }
+      if (lastError) return err(lastError.message);
       const created = data;
-      return ok({ id: created?.id, created: true, candidate: created });
+      return ok({
+        id: created?.id,
+        created: true,
+        candidate: created,
+        ...dropped.length ? { dropped_unknown_columns: dropped } : {}
+      });
     }
   );
   registerTool(

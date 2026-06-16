@@ -151,10 +151,41 @@ export function registerCandidatesTools(server: McpServer): void {
         // the resolved enterprise_id or inject a dedupe-key/id.
         ...sanitizeWritable(extra ?? {}, "update"),
       };
-      const { data, error } = await db().from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
-      if (error) return err(error.message);
+      // Tolerate unknown columns: PostgREST rejects the WHOLE insert when `extra`
+      // carries a key that isn't a real candidates column (e.g. ChatGPT passing
+      // `digital_reputation_score` — a runtime score the table doesn't store).
+      // Rather than fail and make the caller loop, drop the offending column and
+      // retry, so a sourced profile always lands in the pipeline. PostgREST names
+      // one missing column per error (PGRST204: "Could not find the 'X' column of
+      // 'candidates' in the schema cache"), so loop until it inserts or hits an
+      // unrelated error. The bound is a safety net against an infinite loop.
+      const dropped: string[] = [];
+      let data: unknown = null;
+      let lastError: { message: string } | null = null;
+      for (let attempt = 0; attempt < 16; attempt++) {
+        const res = await db().from("candidates").insert(row).select(CANDIDATE_COLUMNS).maybeSingle();
+        if (!res.error) {
+          data = res.data;
+          lastError = null;
+          break;
+        }
+        lastError = res.error;
+        const badCol = /Could not find the '([^']+)' column/.exec(res.error.message)?.[1];
+        if (badCol && badCol in row) {
+          delete row[badCol];
+          dropped.push(badCol);
+          continue;
+        }
+        break; // a different error (RLS, FK, auth…) — surface it, don't loop
+      }
+      if (lastError) return err(lastError.message);
       const created = data as { id?: string } | null;
-      return ok({ id: created?.id, created: true, candidate: created });
+      return ok({
+        id: created?.id,
+        created: true,
+        candidate: created,
+        ...(dropped.length ? { dropped_unknown_columns: dropped } : {}),
+      });
     },
   );
 
