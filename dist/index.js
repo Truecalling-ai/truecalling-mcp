@@ -43991,7 +43991,7 @@ function registerPsyTools(server) {
     async ({ candidate_id, lang }) => {
       const block = guardWrite("create_psy_assignment");
       if (block) return block;
-      const { data, error: error2 } = await db().from("psy_assignments").insert({ candidate_id, lang, status: "pending" }).select("id,token,lang,status,created_at").maybeSingle();
+      const { data, error: error2 } = await db().from("psy_assignments").insert({ candidate_id, language: lang, status: "pending" }).select("id,token,language,status,created_at").maybeSingle();
       if (error2) return err(error2.message);
       return ok(data ?? { created: true });
     }
@@ -44005,9 +44005,15 @@ function registerPsyTools(server) {
       annotations: { readOnlyHint: true, idempotentHint: true }
     },
     async ({ lang }) => {
-      const { data, error: error2 } = await db().from("psy_items").select("*").eq("lang", lang);
+      const { data, error: error2 } = await db().from("psy_items").select("idq,display_order,question,image_url").order("display_order");
       if (error2) return err(error2.message);
-      return ok({ count: data?.length ?? 0, items: data ?? [] });
+      const items = (data ?? []).map((it) => ({
+        idq: it.idq,
+        display_order: it.display_order,
+        question: it.question?.[lang] ?? it.question?.en ?? it.question,
+        image_url: it.image_url
+      }));
+      return ok({ count: items.length, lang, items });
     }
   );
   registerTool(

@@ -21,10 +21,14 @@ export function registerPsyTools(server: McpServer): void {
     async ({ candidate_id, lang }) => {
       const block = guardWrite("create_psy_assignment");
       if (block) return block;
+      // The real column is `language` (api.psy_assignments), NOT `lang` — the
+      // tool keeps a `lang` input for callers but must map it to the DB column,
+      // else PostgREST throws "Could not find the 'lang' column … in the schema
+      // cache". The RPC that records the submission also reads `language`.
       const { data, error } = await db()
         .from("psy_assignments")
-        .insert({ candidate_id, lang, status: "pending" })
-        .select("id,token,lang,status,created_at")
+        .insert({ candidate_id, language: lang, status: "pending" })
+        .select("id,token,language,status,created_at")
         .maybeSingle();
       if (error) return err(error.message);
       return ok(data ?? { created: true });
@@ -40,9 +44,22 @@ export function registerPsyTools(server: McpServer): void {
       annotations: { readOnlyHint: true, idempotentHint: true },
     },
     async ({ lang }) => {
-      const { data, error } = await db().from("psy_items").select("*").eq("lang", lang);
+      // psy_items has NO `lang` column — each row's `question` jsonb carries all
+      // languages ({ fr, en, … }). Filtering `.eq("lang", lang)` therefore errors
+      // the same way create_psy_assignment did. Read every item (ordered) and
+      // project the requested locale, falling back to en then the raw jsonb.
+      const { data, error } = await db()
+        .from("psy_items")
+        .select("idq,display_order,question,image_url")
+        .order("display_order");
       if (error) return err(error.message);
-      return ok({ count: data?.length ?? 0, items: data ?? [] });
+      const items = (data ?? []).map((it: any) => ({
+        idq: it.idq,
+        display_order: it.display_order,
+        question: it.question?.[lang] ?? it.question?.en ?? it.question,
+        image_url: it.image_url,
+      }));
+      return ok({ count: items.length, lang, items });
     },
   );
 
