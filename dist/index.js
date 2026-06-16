@@ -43894,11 +43894,13 @@ function registerEmilyTools(server) {
   registerTool(
     "send_whatsapp",
     {
-      title: "Send a WhatsApp message to a candidate",
-      description: "Calls `send-whatsapp` edge function. \u26A0\uFE0F Sends a REAL message via Twilio \u2014 costs money and the candidate will see it. The edge requires enterpriseId + candidateId + the recipient phone (`to`); this tool derives them from the candidate row (works for multi-enterprise users \u2014 the candidate unambiguously belongs to one enterprise). Pass enterprise_id / to to override.",
+      title: "Message / first-contact a candidate on WhatsApp",
+      description: "\u2705 THE tool to MESSAGE or CONTACT a candidate. Use it whenever the user asks to 'send a message', 'contact', 'reach out to', 'relancer' or 'do first contact' for a candidate \u2014 that always means this WhatsApp send. Calls the `send-whatsapp` edge (Twilio). \u26A0\uFE0F Sends a REAL message \u2014 costs money and the candidate sees it. FIRST CONTACT IS AUTOMATIC: on the first message to a candidate, WhatsApp forbids free text, so the edge sends the enterprise's APPROVED template \u2014 your `message` is ignored then and only delivered once the candidate has REPLIED (24h session open). So `message` is OPTIONAL: to just trigger first contact, call with ONLY `candidate_id`. enterprise_id + recipient phone are derived from the candidate row (pass enterprise_id / to to override). Do NOT pass channel/language/job_title/subject \u2014 they aren't params. After a successful send a DB trigger moves the candidate to Accepted/waiting.",
       inputSchema: {
         candidate_id: external_exports.string().uuid(),
-        message: external_exports.string().min(1),
+        message: external_exports.string().optional().describe(
+          "Free-text body. OPTIONAL \u2014 ignored on first contact (the approved template is sent instead), and only delivered once the candidate has replied within the 24h window. Omit it to just do first contact."
+        ),
         enterprise_id: external_exports.string().uuid().optional().describe("Override; defaults to the candidate's enterprise_id."),
         to: external_exports.string().optional().describe("Override recipient phone; defaults to the candidate's telephone[0].")
       },

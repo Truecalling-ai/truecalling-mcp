@@ -103,15 +103,26 @@ export function registerEmilyTools(server: McpServer): void {
   registerTool(
     "send_whatsapp",
     {
-      title: "Send a WhatsApp message to a candidate",
+      title: "Message / first-contact a candidate on WhatsApp",
       description:
-        "Calls `send-whatsapp` edge function. ⚠️ Sends a REAL message via Twilio — costs money and the candidate will " +
-        "see it. The edge requires enterpriseId + candidateId + the recipient phone (`to`); this tool derives them from " +
-        "the candidate row (works for multi-enterprise users — the candidate unambiguously belongs to one enterprise). " +
-        "Pass enterprise_id / to to override.",
+        "✅ THE tool to MESSAGE or CONTACT a candidate. Use it whenever the user asks to 'send a message', 'contact', " +
+        "'reach out to', 'relancer' or 'do first contact' for a candidate — that always means this WhatsApp send. " +
+        "Calls the `send-whatsapp` edge (Twilio). ⚠️ Sends a REAL message — costs money and the candidate sees it. " +
+        "FIRST CONTACT IS AUTOMATIC: on the first message to a candidate, WhatsApp forbids free text, so the edge sends " +
+        "the enterprise's APPROVED template — your `message` is ignored then and only delivered once the candidate has " +
+        "REPLIED (24h session open). So `message` is OPTIONAL: to just trigger first contact, call with ONLY " +
+        "`candidate_id`. enterprise_id + recipient phone are derived from the candidate row (pass enterprise_id / to to " +
+        "override). Do NOT pass channel/language/job_title/subject — they aren't params. After a successful send a DB " +
+        "trigger moves the candidate to Accepted/waiting.",
       inputSchema: {
         candidate_id: z.string().uuid(),
-        message: z.string().min(1),
+        message: z
+          .string()
+          .optional()
+          .describe(
+            "Free-text body. OPTIONAL — ignored on first contact (the approved template is sent instead), and only " +
+              "delivered once the candidate has replied within the 24h window. Omit it to just do first contact.",
+          ),
         enterprise_id: z.string().uuid().optional().describe("Override; defaults to the candidate's enterprise_id."),
         to: z.string().optional().describe("Override recipient phone; defaults to the candidate's telephone[0]."),
       },
