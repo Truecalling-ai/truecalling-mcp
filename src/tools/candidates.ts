@@ -88,7 +88,13 @@ export function registerCandidatesTools(server: McpServer): void {
           .optional()
           .describe("Any extra candidate columns (e.g. compatibility_score, matching_skills)."),
       },
-      annotations: { readOnlyHint: false, idempotentHint: false },
+      // create only INSERTS and dedupes by LinkedIn (repeat call → existing id,
+      // never an overwrite/delete), so it is non-destructive and effectively
+      // idempotent. Declaring this matters for clients (e.g. ChatGPT) that force
+      // a confirmation on every call to a tool left destructive-by-default
+      // (MCP's destructiveHint defaults to true when omitted) and won't honour
+      // "always allow" for it — which showed up as an endless re-consent loop.
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true },
     },
     async ({
       candidate_name,
